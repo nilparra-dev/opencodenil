@@ -705,6 +705,10 @@ gh pr merge sync-upstream --auto --merge
 | ID | Upstream file(s) | Intent (what must stay true) | Reason | Propose upstream? |
 | --- | --- | --- | --- | --- |
 | F-001 | `AGENTS.md` (line 1) | Agents know this is a fork and read `FORK.md` first | Fork infrastructure | No |
+| F-002 | `packages/opencode/src/plugin/index.ts` (import + one `internalPlugins()` entry) | `AnthropicAuthPlugin` from the fork-only `src/plugin/anthropic.ts` is registered as an internal plugin, so `anthropic` offers "Claude Pro/Max" OAuth next to the API key | Claude Pro/Max login | No (upstream removed it on purpose) |
+| F-003 | `packages/opencode/src/session/llm/request.ts` (`prepare`) | With `anthropic` + OAuth auth only: the system field is exactly `CLAUDE_CODE_SYSTEM`, opencode's system prompt goes as the first user message, and the `todowrite` tool key is sent as `TodoWrite`. API-key auth and every other provider are untouched | Anthropic rejects consumer OAuth requests otherwise (429 / 400) | No |
+| F-004 | `packages/opencode/src/cli/cmd/providers.ts`, `packages/tui/src/component/dialog-provider.tsx` | The provider pickers describe `anthropic` as "Claude Pro/Max or API key" | Discoverability of F-002 | No |
+| F-005 | `packages/web/src/content/docs/providers.mdx` (Anthropic section) | Docs list the Claude Pro/Max method and warn that it is unsupported by Anthropic's terms | Docs for F-002 | No |
 
 To check that the ledger is complete, list the upstream files the fork modifies (fork-only files excluded):
 

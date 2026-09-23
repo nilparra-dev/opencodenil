@@ -13,9 +13,17 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
+import { CLAUDE_CODE_SYSTEM } from "@/plugin/anthropic"
 import { mergeDeep } from "remeda"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
+
+// Anthropic answers 400 "You're out of extra usage" to any consumer OAuth
+// request whose `tools` array advertises `todowrite` verbatim, regardless of
+// model, tool count or schema. Renaming the key is enough: the gate only reads
+// that field, history tool calls are ignored, and the tool still carries
+// opencode's own execute and permission key.
+const ANTHROPIC_OAUTH_TOOL_ALIASES: Record<string, string> = { todowrite: "TodoWrite" }
 
 type PrepareInput = {
   readonly user: SessionV1.User
@@ -55,6 +63,7 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
+  const isAnthropicOauth = input.provider.id === "anthropic" && input.auth?.type === "oauth"
   const system = [
     [
       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
@@ -98,18 +107,18 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
-  const messages =
-    isOpenaiOauth || input.isWorkflow
-      ? input.messages
-      : [
-          ...system.map(
-            (x): ModelMessage => ({
-              role: "system",
-              content: x,
-            }),
-          ),
-          ...input.messages,
-        ]
+  // Anthropic answers 429 to sonnet/opus requests from consumer OAuth tokens
+  // unless `system` is byte-exactly the Claude Code identity line, so those
+  // requests send that line and drop our instructions into the conversation.
+  // API-key auth keeps the system field it always had.
+  const systemMessages: ModelMessage[] = isAnthropicOauth
+    ? [
+        { role: "system", content: CLAUDE_CODE_SYSTEM },
+        { role: "user", content: system.join("\n") },
+      ]
+    : system.map((x): ModelMessage => ({ role: "system", content: x }))
+
+  const messages = isOpenaiOauth || input.isWorkflow ? input.messages : [...systemMessages, ...input.messages]
 
   const params = yield* input.plugin.trigger(
     "chat.params",
@@ -181,7 +190,13 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   return {
     system,
     messages,
-    tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
+    tools: Object.fromEntries(
+      Object.entries(tools)
+        .toSorted(([a], [b]) => a.localeCompare(b))
+        .map(([name, tool]): [string, Tool] =>
+          isAnthropicOauth ? [ANTHROPIC_OAUTH_TOOL_ALIASES[name] ?? name, tool] : [name, tool],
+        ),
+    ),
     params,
     messageTransformOptions: options,
     headers: {

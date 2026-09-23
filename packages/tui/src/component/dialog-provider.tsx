@@ -60,7 +60,7 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
         providerID: provider.id,
         description: {
           opencode: "(Recommended)",
-          anthropic: "(API key)",
+          anthropic: "(Claude Pro/Max or API key)",
           openai: "(ChatGPT Plus/Pro or API key)",
           "opencode-go": "Low cost subscription for everyone",
         }[provider.id],

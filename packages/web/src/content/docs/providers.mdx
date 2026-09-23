@@ -343,6 +343,7 @@ For custom inference profiles, use the model and provider name in the key and se
    ```txt
    ┌ Select auth method
    │
+   │ Claude Pro/Max
    │ Manually enter API Key
    └
    ```
@@ -354,11 +355,11 @@ For custom inference profiles, use the model and provider name in the key and se
    ```
 
 :::info
-There are plugins that allow you to use your Claude Pro/Max models with
-OpenCode. Anthropic explicitly prohibits this.
-
-Previous versions of OpenCode came bundled with these plugins but that is no
-longer the case as of 1.3.0
+Connecting a Claude Pro/Max account makes OpenCode authenticate with the OAuth
+client that ships with Claude Code. Anthropic's terms prohibit using the
+consumer subscription outside its official clients, so this is unsupported:
+model access can be gated on the client version, requests share the same 5-hour
+and weekly usage windows as Claude Code, and Anthropic may block it at any time.
 
 Other companies support freedom of choice with developer tooling - you can use
 the following subscriptions in OpenCode with zero setup:
