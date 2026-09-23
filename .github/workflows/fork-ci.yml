@@ -1,0 +1,45 @@
+name: fork-ci
+
+on:
+  pull_request:
+    branches: [custom]
+  push:
+    branches: [custom]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "fork-ci"
+      - name: Unit tests
+        run: |
+          GITHUB_ACTIONS=false bun turbo test --filter='!./packages/opencode'
+          GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
+      - name: Check generated client
+        working-directory: packages/client
+        run: bun run check:generated

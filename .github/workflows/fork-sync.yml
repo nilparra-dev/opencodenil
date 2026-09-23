@@ -1,0 +1,157 @@
+name: fork-sync
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_URL: https://github.com/anomalyco/opencode.git
+  UPSTREAM_BRANCH: dev
+  FORK_BRANCH: custom
+  SYNC_BRANCH: sync-upstream
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      behind: ${{ steps.fetch.outputs.behind }}
+      conflict: ${{ steps.merge.outputs.conflict }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Disable upstream workflows
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          gh workflow list --all --limit 200 --json path,state \
+            --jq '.[] | select(.state=="active") | select(.path | startswith(".github/workflows/fork-") | not) | .path' |
+            while read -r p; do
+              echo "disabling $p"
+              gh workflow disable "$(basename "$p")"
+            done
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "+refs/heads/$UPSTREAM_BRANCH:refs/remotes/upstream/$UPSTREAM_BRANCH"
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+            echo "custom already contains upstream/$UPSTREAM_BRANCH"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.fetch.outputs.behind == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$SYNC_BRANCH"
+          if git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" \
+               -m "chore(fork): merge upstream ${{ steps.fetch.outputs.upstream_sha }}"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Bun
+        if: steps.merge.outputs.conflict == 'false'
+        uses: ./.github/actions/setup-bun
+
+      - name: Regenerate client
+        if: steps.merge.outputs.conflict == 'false'
+        working-directory: packages/client
+        run: |
+          bun run generate
+          if ! git diff --quiet -- src/generated src/generated-effect; then
+            git add src/generated src/generated-effect
+            git commit -m "chore(fork): regenerate client after upstream merge"
+          fi
+
+      - name: Bundle sync branch
+        if: steps.merge.outputs.conflict == 'false'
+        run: git bundle create "$RUNNER_TEMP/sync-upstream.bundle" "$SYNC_BRANCH" "^origin/$FORK_BRANCH"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.merge.outputs.conflict == 'false'
+        with:
+          name: sync-upstream
+          path: ${{ runner.temp }}/sync-upstream.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Report conflict
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          {
+            echo "Syncing with \`upstream/$UPSTREAM_BRANCH\` (${{ steps.fetch.outputs.upstream_sha }}) has conflicts."
+            echo
+            echo "Conflicted files:"
+            echo
+            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+            echo
+            echo "Resolve following section 6 of \`FORK.md\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$RUNNER_TEMP/body.md"
+          existing=$(gh issue list --label fork-sync-conflict --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "Upstream sync conflict" --label fork-sync-conflict --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+  publish:
+    needs: sync
+    if: needs.sync.outputs.behind == 'true' && needs.sync.outputs.conflict == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: custom
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sync-upstream
+          path: ${{ runner.temp }}
+
+      - name: Load and verify sync branch
+        run: |
+          git bundle verify "$RUNNER_TEMP/sync-upstream.bundle"
+          git fetch "$RUNNER_TEMP/sync-upstream.bundle" sync-upstream:refs/heads/sync-upstream
+          git merge-base --is-ancestor origin/custom sync-upstream || { echo "custom advanced during sync; rerun the sync" >&2; exit 1; }
+
+      - name: Push and open PR
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          gh auth setup-git
+          git push --force origin sync-upstream
+          if ! gh pr view sync-upstream --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
+            gh pr create \
+              --base custom --head sync-upstream \
+              --title "chore(fork): sync upstream" \
+              --label fork-sync \
+              --body "Automated sync with upstream/dev. Merged with a **merge commit** once fork-ci passes. Do not squash."
+          fi
+          gh pr merge sync-upstream --auto --merge
