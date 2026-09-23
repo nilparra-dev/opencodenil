@@ -14,12 +14,12 @@ To get there, everything here is designed to **keep our diff against upstream as
 
 ## 0. Variables
 
-Replace these values throughout this document and in the workflows before using them.
+These are the configured values for this fork.
 
 | Variable          | Value                                       | Description                          |
 | ----------------- | ------------------------------------------- | ------------------------------------ |
-| `FORK_OWNER`      | `<github-user-or-org>`                      | Owner of the fork                    |
-| `FORK_REPO`       | `opencode`                                  | Fork repository name                 |
+| `FORK_OWNER`      | `nilparra-dev`                              | Owner of the fork                    |
+| `FORK_REPO`       | `opencodenil`                               | Fork repository name                 |
 | `UPSTREAM_URL`    | `https://github.com/anomalyco/opencode.git` | Original repository                  |
 | `UPSTREAM_BRANCH` | `dev`                                       | Upstream default branch              |
 | `FORK_BRANCH`     | `custom`                                    | Main fork branch (our code)          |
@@ -39,7 +39,7 @@ origin/custom  ───●──○──○─────●──○──�
 ```
 
 - **Remotes:**
-  - `origin`: our fork (`github.com/FORK_OWNER/FORK_REPO`).
+  - `origin`: our fork (`github.com/nilparra-dev/opencodenil`).
   - `upstream`: `anomalyco/opencode`. **Never** push to `upstream`.
 - **Branches:**
   - `custom`: the fork's main branch and its **default branch on GitHub**. It holds upstream plus our changes, and only receives changes through Pull Requests.
@@ -76,19 +76,19 @@ Upstream is MIT-licensed, so both options are valid. The rest of this document w
 Starting from an existing upstream clone, such as the one on this machine:
 
 ```bash
-# Option A: create the fork (copy all branches, not only the default one)
-gh repo fork anomalyco/opencode --clone=false --default-branch-only=false
+# Option A: create the public fork (copy all branches, not only the default one)
+gh repo fork anomalyco/opencode --fork-name opencodenil --clone=false --default-branch-only=false
 # Option B: create an empty private repository
-gh repo create FORK_OWNER/FORK_REPO --private
+gh repo create nilparra-dev/opencodenil --private
 
 git remote rename origin upstream          # the current clone points at anomalyco → it becomes upstream
-git remote add origin https://github.com/FORK_OWNER/FORK_REPO.git
+git remote add origin https://github.com/nilparra-dev/opencodenil.git
 git remote set-url --push upstream DISABLED # prevents accidental pushes to upstream
 git fetch upstream
 
 git checkout -b custom upstream/dev
 git push -u origin custom
-gh repo edit FORK_OWNER/FORK_REPO --default-branch custom
+gh repo edit nilparra-dev/opencodenil --default-branch custom
 # Option A: delete the dev branch copied by the fork, so it causes no confusion and cannot trigger upstream workflows
 git push origin --delete dev
 ```
@@ -110,7 +110,7 @@ git config fetch.prune true
 1. It cannot push commits that modify `.github/workflows/**`, and upstream changes those often. The result is the error `refusing to allow a GitHub App to create or update workflow ... without workflows permission`.
 2. PRs created with `GITHUB_TOKEN` **do not trigger** other workflows, so CI would never run on the sync PR.
 
-Create a **fine-grained personal access token** scoped to `FORK_OWNER/FORK_REPO` with these permissions:
+Create a **fine-grained personal access token** scoped to `nilparra-dev/opencodenil` with these permissions:
 
 | Permission | Level |
 | --- | --- |
@@ -124,7 +124,7 @@ Create a **fine-grained personal access token** scoped to `FORK_OWNER/FORK_REPO`
 Store it as a secret:
 
 ```bash
-gh secret set FORK_SYNC_TOKEN --repo FORK_OWNER/FORK_REPO   # paste the token when prompted
+gh secret set FORK_SYNC_TOKEN --repo nilparra-dev/opencodenil   # paste the token when prompted
 ```
 
 Set a reminder before it expires. Once it expires, `fork-sync` cannot disable workflows, push the sync branch or manage its PR.
@@ -135,15 +135,15 @@ Keep this token out of repository code execution. Do not define it at job scope 
 
 ```bash
 # Allow auto-merge and merge commits, both required for the sync PR
-gh repo edit FORK_OWNER/FORK_REPO \
+gh repo edit nilparra-dev/opencodenil \
   --enable-auto-merge \
   --enable-merge-commit \
   --delete-branch-on-merge=false
 
 # Labels used by the workflows
-gh label create fork-sync            --color 0E8A16 --description "Automated upstream sync PR" --repo FORK_OWNER/FORK_REPO
-gh label create fork-sync-conflict   --color D93F0B --description "Upstream sync needs conflict resolution" --repo FORK_OWNER/FORK_REPO
-gh label create needs-review         --color FBCA04 --description "Resolved by an agent; needs human review" --repo FORK_OWNER/FORK_REPO
+gh label create fork-sync            --color 0E8A16 --description "Automated upstream sync PR" --repo nilparra-dev/opencodenil
+gh label create fork-sync-conflict   --color D93F0B --description "Upstream sync needs conflict resolution" --repo nilparra-dev/opencodenil
+gh label create needs-review         --color FBCA04 --description "Resolved by an agent; needs human review" --repo nilparra-dev/opencodenil
 ```
 
 👤 In the UI (Settings → Branches → Add rule, or Rulesets) for the `custom` branch:
@@ -168,9 +168,9 @@ Upstream ships about 25 workflows (`publish.yml`, `deploy.yml`, `triage.yml`, `t
 The `fork-sync` workflow automatically disables every workflow whose file name does not start with `fork-`, and does so on every run, so it also covers new workflows that upstream adds later. For the first time, run it by hand:
 
 ```bash
-gh workflow list --repo FORK_OWNER/FORK_REPO --all --limit 200 --json path,state \
+gh workflow list --repo nilparra-dev/opencodenil --all --limit 200 --json path,state \
   --jq '.[] | select(.state=="active") | select(.path | startswith(".github/workflows/fork-") | not) | .path' |
-  while read -r p; do gh workflow disable "$(basename "$p")" --repo FORK_OWNER/FORK_REPO; done
+  while read -r p; do gh workflow disable "$(basename "$p")" --repo nilparra-dev/opencodenil; done
 ```
 
 **Convention:** every fork workflow is named `.github/workflows/fork-*.yml`. No upstream file will ever have that prefix, so fork workflows never conflict.
@@ -182,8 +182,8 @@ Create the files from [section 4](#4-fork-files) on `custom` and land them with 
 ### 2.8 Verify the setup
 
 ```bash
-gh workflow run fork-sync.yml --repo FORK_OWNER/FORK_REPO
-gh run watch --repo FORK_OWNER/FORK_REPO
+gh workflow run fork-sync.yml --repo nilparra-dev/opencodenil
+gh run watch --repo nilparra-dev/opencodenil
 ```
 
 Expected result: the workflow finishes green and one of these three things happens:
