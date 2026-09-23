@@ -149,7 +149,7 @@ gh label create needs-review         --color FBCA04 --description "Resolved by a
 👤 In the UI (Settings → Branches → Add rule, or Rulesets) for the `custom` branch:
 
 - **Require a pull request before merging** (no required approvals if you work alone; otherwise 1).
-- **Require status checks to pass**: select `fork-ci / typecheck` and `fork-ci / test`. These checks only show up after `fork-ci` has run once.
+- **Require status checks to pass**: select `typecheck` and `test`, the job checks from `fork-ci`. They only show up after `fork-ci` has run once.
 - **Block force pushes** and **Restrict deletions**.
 
 👤 In Settings → Actions → General:
