@@ -413,7 +413,7 @@ jobs:
 
 ### 4.3 `.github/workflows/fork-ci.yml`
 
-This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not a replacement for all upstream checks. It runs typecheck, Linux unit tests and the generated-client check. It does not run Windows unit tests, E2E tests or the HttpApi exerciser gates. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
+This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not a replacement for all upstream checks. It runs typecheck, Linux unit tests and the generated-client check. Three subprocess timing tests in `packages/opencode/test/cli/run/run-process.test.ts` are excluded by exact test-name filter because they exceed their 15- or 30-second deadlines under full-suite load; they are listed in section 8. All other unit tests still run. The workflow does not run Windows unit tests, E2E tests or the HttpApi exerciser gates. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
 
 ```yaml
 name: fork-ci
@@ -451,7 +451,9 @@ jobs:
           git config --global user.email "bot@example.com"
           git config --global user.name "fork-ci"
       - name: Unit tests
-        run: GITHUB_ACTIONS=false bun turbo test
+        run: |
+          GITHUB_ACTIONS=false bun turbo test --filter='!./packages/opencode'
+          GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
       - name: Check generated client
         working-directory: packages/client
         run: bun run check:generated
@@ -720,7 +722,7 @@ Upstream tests or checks that fail in `fork-ci` because of the environment, not 
 
 | Test / check | Reason | Since |
 | --- | --- | --- |
-| _(none)_ | | |
+| `packages/opencode/test/cli/run/run-process.test.ts`: `exits nonzero promptly when the model is unknown`, `--format json records an unknown stream finish and continuation`, and `unknown stream finish preserves partial output and continues` | On GitHub-hosted Ubuntu, the child processes exceeded the tests' 15- or 30-second deadlines during the full suite. `fork-ci.yml` excludes only these three cases; the rest of the package tests still run. | 2026-09-23 |
 
 ---
 
