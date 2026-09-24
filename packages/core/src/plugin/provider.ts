@@ -6,6 +6,7 @@ import { CloudflareWorkersAIPlugin } from "./provider/cloudflare-workers-ai.js"
 import { CoherePlugin } from "./provider/cohere.js"
 import { DigitalOceanPlugin } from "./provider/digitalocean.js"
 import { DynamicProviderPlugin } from "./provider/dynamic.js"
+import { ForkAnthropicOAuthPlugin } from "./provider/fork-anthropic-oauth.js" // fork: Claude Pro/Max login
 import { GatewayPlugin } from "./provider/gateway.js"
 import { GithubCopilotPlugin } from "./provider/github-copilot.js"
 import { GitLabPlugin } from "./provider/gitlab.js"
@@ -63,4 +64,5 @@ export const ProviderPlugins: PluginInternal.InternalPlugin[] = [
   XAIPlugin,
   ZenmuxPlugin,
   DynamicProviderPlugin,
+  ForkAnthropicOAuthPlugin, // fork: Claude Pro/Max login
 ]
