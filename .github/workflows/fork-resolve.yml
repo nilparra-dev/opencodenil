@@ -1,0 +1,104 @@
+name: fork-resolve
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-resolve
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    if: >
+      vars.FORK_AGENT_RESOLVE == 'true' &&
+      (github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'fork-sync-conflict'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # Full clone on purpose: the agent inspects history (git log -p, -S),
+      # which would fetch blobs one by one in a partial clone.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: custom
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Start conflicted merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/anomalyco/opencode.git
+          # Same release selection as fork-sync: the newest stable v2 tag.
+          tag=$(git ls-remote --tags --refs upstream 'v*' | sed 's#.*refs/tags/##' | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          git fetch --no-tags upstream "+refs/tags/$tag:refs/tags/$tag"
+          echo "UPSTREAM_TAG=$tag" >> "$GITHUB_ENV"
+          git checkout -B sync-upstream-agent
+          git merge --no-ff --no-commit "$tag" || true
+
+      - uses: ./.github/actions/fork-setup-bun
+        continue-on-error: true # bun install can fail while package.json or bun.lock are conflicted
+
+      - name: Install opencode
+        run: npm i -g opencode-ai@latest
+
+      - name: Resolve with agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          opencode run --auto -m "${{ vars.FORK_AGENT_MODEL }}" \
+            "A merge of upstream release $UPSTREAM_TAG is in progress with conflicts. Read FORK.md and follow section 6 EXACTLY to resolve them. Do not commit or push; leave the tree resolved with every file staged via git add."
+
+      - name: Verify and bundle merge
+        run: |
+          if git diff --name-only --diff-filter=U | grep -q .; then echo "unresolved conflicts remain"; exit 1; fi
+          if git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then echo "conflict markers remain"; exit 1; fi
+          git commit --no-edit -m "chore(fork): merge upstream $UPSTREAM_TAG (agent-resolved)"
+          git bundle create "$RUNNER_TEMP/sync-upstream-agent.bundle" sync-upstream-agent ^origin/custom
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sync-upstream-agent
+          path: ${{ runner.temp }}/sync-upstream-agent.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: custom
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sync-upstream-agent
+          path: ${{ runner.temp }}
+
+      - name: Load and verify resolved merge
+        run: |
+          git bundle verify "$RUNNER_TEMP/sync-upstream-agent.bundle"
+          git fetch "$RUNNER_TEMP/sync-upstream-agent.bundle" sync-upstream-agent:refs/heads/sync-upstream-agent
+          git merge-base --is-ancestor origin/custom sync-upstream-agent || { echo "custom advanced during conflict resolution; rerun the sync" >&2; exit 1; }
+
+      - name: Push and open review PR
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          gh auth setup-git
+          git push --force origin sync-upstream-agent
+          if ! gh pr view sync-upstream-agent --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
+            gh pr create --base custom --head sync-upstream-agent \
+              --title "chore(fork): sync upstream (agent-resolved)" \
+              --label needs-review \
+              --body "Conflicts resolved automatically per FORK.md Â§6. **Review before merging.** Integrate with a merge commit, never squash."
+          fi

@@ -1,0 +1,218 @@
+name: fork-sync
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: anomalyco/opencode
+  # Only stable release tags of this major line are merged, never a branch tip,
+  # so the fork always holds an exact upstream release plus our changes.
+  UPSTREAM_TAG_PATTERN: '^v2\.[0-9]+\.[0-9]+$'
+  FORK_BRANCH: custom
+  SYNC_BRANCH: sync-upstream
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      behind: ${{ steps.fetch.outputs.behind }}
+      conflict: ${{ steps.merge.outputs.conflict }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Disable upstream workflows
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh workflow list --all --limit 200 --json path,state \
+            --jq '.[] | select(.state=="active") | select(.path | startswith(".github/workflows/fork-") | not) | .path' |
+            while read -r p; do
+              echo "disabling $p"
+              gh workflow disable "$(basename "$p")"
+            done
+
+      - name: Find latest upstream release
+        id: release
+        run: |
+          tag=$(git ls-remote --tags --refs "https://github.com/$UPSTREAM_REPO.git" 'v*' |
+            sed 's#.*refs/tags/##' | grep -E "$UPSTREAM_TAG_PATTERN" | sort -V | tail -1)
+          if [ -z "$tag" ]; then echo "no upstream release tag matches $UPSTREAM_TAG_PATTERN" >&2; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "latest upstream release: $tag"
+
+      # Hourly runs are cheap because the no-op case is answered by the compare
+      # API without cloning. Any API failure falls through to the full check.
+      # While a sync PR is open, the run builds on the sync branch instead of
+      # rebuilding it from custom, so fixes pushed there survive. It merges in
+      # whatever the branch lacks: new upstream commits, and new custom commits
+      # (branch protection requires PRs to be up to date with custom). A sync
+      # PR that already has both is left alone.
+      - name: Check for changes
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          compare() { gh api "repos/$GITHUB_REPOSITORY/compare/$1...$2?per_page=1" --jq .status || echo unknown; }
+          contains() { local s; s=$(compare "$1" "$2"); echo "compare $1...$2: $s" >&2; [ "$s" = identical ] || [ "$s" = behind ]; }
+          upstream="${UPSTREAM_REPO/\//:}:$UPSTREAM_TAG"
+          open=$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number --jq length || echo 0)
+          if [ "$open" != 0 ]; then base="$SYNC_BRANCH"; else base="$FORK_BRANCH"; fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          if contains "$base" "$upstream" && contains "$base" "$FORK_BRANCH"; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "$base already contains $UPSTREAM_REPO@$UPSTREAM_TAG and $FORK_BRANCH"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout fork
+        if: steps.check.outputs.new == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.check.outputs.base }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Fetch upstream
+        id: fetch
+        if: steps.check.outputs.new == 'true'
+        env:
+          UPSTREAM_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch --no-tags upstream "+refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
+          if git merge-base --is-ancestor "$UPSTREAM_TAG" HEAD && git merge-base --is-ancestor "origin/$FORK_BRANCH" HEAD; then
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.check.outputs.base }} already contains $UPSTREAM_TAG and $FORK_BRANCH"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Starting from custom, only the upstream merge happens. Starting from an
+      # open sync branch, custom is merged first when it has new commits.
+      - name: Merge
+        id: merge
+        if: steps.fetch.outputs.behind == 'true'
+        env:
+          UPSTREAM_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$SYNC_BRANCH"
+          for ref in "origin/$FORK_BRANCH" "refs/tags/$UPSTREAM_TAG"; do
+            if git merge-base --is-ancestor "$ref" HEAD; then continue; fi
+            if [ "$ref" = "origin/$FORK_BRANCH" ]; then msg="chore(fork): merge $FORK_BRANCH into $SYNC_BRANCH"; else msg="chore(fork): merge upstream $UPSTREAM_TAG"; fi
+            if ! git merge --no-ff --no-edit "$ref" -m "$msg"; then
+              echo "$ref" > "$RUNNER_TEMP/conflict-ref.txt"
+              git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+              git merge --abort
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+      # Runs on the default branch, so it also saves the node_modules cache for
+      # the merged lockfile before fork-ci needs it on the sync PR.
+      - name: Setup Bun
+        if: steps.merge.outputs.conflict == 'false'
+        uses: ./.github/actions/fork-setup-bun
+
+      - name: Regenerate client
+        if: steps.merge.outputs.conflict == 'false'
+        working-directory: packages/client
+        run: |
+          bun run generate
+          if ! git diff --quiet -- src/generated src/generated-effect; then
+            git add src/generated src/generated-effect
+            git commit -m "chore(fork): regenerate client after upstream merge"
+          fi
+
+      - name: Bundle sync branch
+        if: steps.merge.outputs.conflict == 'false'
+        run: git bundle create "$RUNNER_TEMP/sync-upstream.bundle" "$SYNC_BRANCH" "^origin/$FORK_BRANCH"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.merge.outputs.conflict == 'false'
+        with:
+          name: sync-upstream
+          path: ${{ runner.temp }}/sync-upstream.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Report conflict
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          {
+            echo "Merging \`$(cat "$RUNNER_TEMP/conflict-ref.txt")\` into \`$SYNC_BRANCH\` (base \`${{ steps.check.outputs.base }}\`, upstream ${{ steps.release.outputs.tag }}) has conflicts."
+            echo
+            echo "Conflicted files:"
+            echo
+            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+            echo
+            echo "Resolve following section 6 of \`FORK.md\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$RUNNER_TEMP/body.md"
+          # Hourly runs keep one open issue current instead of adding a comment each time.
+          existing=$(gh issue list --label fork-sync-conflict --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "Upstream sync conflict" --label fork-sync-conflict --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+  publish:
+    needs: sync
+    if: needs.sync.outputs.behind == 'true' && needs.sync.outputs.conflict == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sync-upstream
+          path: ${{ runner.temp }}
+
+      - name: Load and verify sync branch
+        run: |
+          git bundle verify "$RUNNER_TEMP/sync-upstream.bundle"
+          git fetch "$RUNNER_TEMP/sync-upstream.bundle" "$SYNC_BRANCH:refs/heads/$SYNC_BRANCH"
+          git merge-base --is-ancestor "origin/$FORK_BRANCH" "$SYNC_BRANCH" || { echo "custom advanced during sync; rerun the sync" >&2; exit 1; }
+
+      - name: Push and open PR
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+          UPSTREAM_TAG: ${{ needs.sync.outputs.tag }}
+        run: |
+          gh auth setup-git
+          git push --force origin "$SYNC_BRANCH"
+          if ! gh pr view "$SYNC_BRANCH" --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
+            gh pr create \
+              --base "$FORK_BRANCH" --head "$SYNC_BRANCH" \
+              --title "chore(fork): sync upstream" \
+              --label fork-sync \
+              --body "Automated sync with upstream release $UPSTREAM_TAG (at creation; later runs update this PR to newer releases). Merged with a **merge commit** once fork-ci passes. Do not squash."
+          fi
+          gh pr merge "$SYNC_BRANCH" --auto --merge

@@ -1,0 +1,198 @@
+name: fork-ci
+
+on:
+  pull_request:
+    branches: [custom]
+  # Only refreshes the node_modules cache on custom; pull request caches are
+  # not shared between PRs. fork-sync already does this for upstream merges.
+  push:
+    branches: [custom]
+    paths:
+      - bun.lock
+      - patches/**
+      - package.json
+      - packages/*/package.json
+      - packages/*/*/package.json
+      - services/*/package.json
+      - .github/actions/fork-setup-bun/**
+  workflow_dispatch:
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/fork-setup-bun
+
+  # Decides what the PR needs:
+  # - only *.md files: nothing runs;
+  # - any other file outside packages/ (lockfile, patches, workflows, root
+  #   config): everything runs;
+  # - otherwise: only the packages turbo reports as affected, which includes
+  #   every package that depends on a changed one.
+  changes:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.affected.outputs.code }}
+      typecheck_matrix: ${{ steps.affected.outputs.typecheck_matrix }}
+      unit: ${{ steps.affected.outputs.unit }}
+      unit_filters: ${{ steps.affected.outputs.unit_filters }}
+      core: ${{ steps.affected.outputs.core }}
+    steps:
+      # A pull_request checkout is GitHub's merge commit, so HEAD^1 is the base
+      # it was merged onto and HEAD^1..HEAD is exactly the PR's change.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: ./.github/actions/fork-setup-bun
+        with:
+          install: "false"
+      - name: Detect affected packages
+        id: affected
+        env:
+          TURBO_TELEMETRY_DISABLED: "1"
+          # Typecheck runs as two groups on separate runners. These packages
+          # take about half of the typecheck time; every other package,
+          # including ones upstream adds later, falls into the "rest" group.
+          HEAVY: |-
+            @opencode/www
+            @opencode/cli
+            @opencode/posts
+            @opencode/sdk
+        run: |
+          filters() { if [ -n "$1" ]; then sed 's/^/--filter=/' <<< "$1" | paste -sd' '; fi; }
+          flag() { if [ -n "$1" ]; then echo true; else echo false; fi; }
+          # write <heavy filters> <rest filters> <unit filters> <core flag>
+          write() {
+            jq -nc --arg heavy "$1" --arg rest "$2" \
+              '[if $heavy != "" then {group: "heavy", filters: $heavy} else empty end, {group: "rest", filters: $rest}]' |
+              sed 's/^/typecheck_matrix=/' >> "$GITHUB_OUTPUT"
+            printf 'code=true\nunit=%s\nunit_filters=%s\ncore=%s\n' "$(flag "$3")" "$3" "$4" >> "$GITHUB_OUTPUT"
+          }
+          everything() {
+            echo "$1: running everything"
+            write "$(filters "$HEAVY")" "$(sed 's/^/--filter=!/' <<< "$HEAVY" | paste -sd' ')" "--filter=!./packages/core" true
+            exit 0
+          }
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then everything "not a pull request"; fi
+          code=$(git diff --name-only HEAD^1 HEAD | grep -vE '\.md$' || true)
+          if [ -z "$code" ]; then
+            echo "only markdown changed: skipping"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qv '^packages/' <<< "$code"; then everything "files outside packages/ changed"; fi
+          names=$(TURBO_SCM_BASE=HEAD^1 TURBO_SCM_HEAD=HEAD \
+            bunx "turbo@$(jq -r .devDependencies.turbo package.json)" ls --affected --output=json |
+            jq -r '.packages.items[].name') || everything "turbo ls failed"
+          echo "affected packages:"
+          echo "$names"
+          write \
+            "$(filters "$(grep -xF "$HEAVY" <<< "$names" || true)")" \
+            "$(filters "$(grep -vxF "$HEAVY" <<< "$names" || true)")" \
+            "$(filters "$(grep -vx @opencode/core <<< "$names" || true)")" \
+            "$(flag "$(grep -x @opencode/core <<< "$names" || true)")"
+
+  typecheck-group:
+    name: typecheck (${{ matrix.group }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.typecheck_matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/fork-setup-bun
+      # Filters come from PR-controlled package names, so they go through env
+      # and word splitting instead of being interpolated into the script.
+      - name: Typecheck
+        if: matrix.filters != ''
+        env:
+          FILTERS: ${{ matrix.filters }}
+        run: bun turbo typecheck $FILTERS
+      - name: Check generated client
+        if: matrix.group == 'rest'
+        working-directory: packages/client
+        run: bun run check:generated
+
+  unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.unit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/fork-setup-bun
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "fork-ci"
+      - name: Unit tests (affected packages except core)
+        env:
+          FILTERS: ${{ needs.changes.outputs.unit_filters }}
+        run: GITHUB_ACTIONS=false bun turbo test $FILTERS
+
+  core:
+    name: core (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/fork-setup-bun
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "fork-ci"
+      - name: Unit tests (packages/core shard)
+        run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/core -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+  # Branch protection requires checks named `typecheck` and `test`; these jobs
+  # report the combined result of the jobs above under those names.
+  typecheck:
+    needs: [changes, typecheck-group]
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check typecheck results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
+  test:
+    needs: [changes, unit, core]
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check test results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
