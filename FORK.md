@@ -461,7 +461,7 @@ This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not
 - `changes` decides what the PR needs. A PR that only touches `*.md` files runs nothing. A PR that touches any other file outside `packages/` (lockfile, patches, workflows, root config; every sync PR) runs everything. Otherwise only the packages that `turbo ls --affected` reports run, which includes every package depending on a changed one. Skipped jobs count as passing for branch protection; if `changes` itself fails, `test` fails.
 - `typecheck` (affected packages plus the generated-client check), `unit` (affected packages except `opencode`) and eight `opencode (N/8)` shards (`bun test --shard`) run in parallel. `packages/opencode` holds almost all the test time, so it is the only package that is sharded. `bun test --shard` splits by file count, not by duration, so shards are uneven; more shards keep the slowest one short.
 - `test` aggregates the test jobs so branch protection can keep requiring the `typecheck` and `test` checks.
-- It runs on PRs and on demand. Pushes to `custom` run only the `cache` job, and only when the lockfile or patches change, to save the `node_modules` cache where every PR can read it (caches saved by a PR are private to that PR).
+- It runs on PRs and on demand. Pushes to `custom` run only the `cache` job, and only when the lockfile, patches or a workspace `package.json` change, to save the `node_modules` cache where every PR can read it (caches saved by a PR are private to that PR).
 - Every job installs dependencies through `fork-setup-bun` (4.6), which restores `node_modules` instead of Bun's download cache.
 
 Three subprocess timing tests in `packages/opencode/test/cli/run/run-process.test.ts` are excluded by exact test-name filter because they exceeded their 15- or 30-second deadlines under full-suite load; they are listed in section 8. All other unit tests still run. The workflow does not run Windows unit tests, E2E tests or the HttpApi exerciser gates. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
@@ -479,6 +479,9 @@ on:
     paths:
       - bun.lock
       - patches/**
+      - package.json
+      - packages/*/package.json
+      - packages/*/*/package.json
       - .github/actions/fork-setup-bun/**
   workflow_dispatch:
 
@@ -763,7 +766,7 @@ Add this line **as the first line** of `AGENTS.md`. It is the only change to an 
 
 ### 4.6 `.github/actions/fork-setup-bun/action.yml`
 
-Fork workflows use this action instead of upstream's `.github/actions/setup-bun`, which we do not edit. It installs the same Bun version, but caches the installed `node_modules` trees keyed by `bun.lock` and `patches/**`, so an exact hit makes `bun install` a quick no-op. With `install: "false"` it only puts Bun on `PATH`. It saves the cache only outside pull requests: `fork-sync` saves it for each merged lockfile, and `fork-ci` does so on pushes to `custom` that change the lockfile.
+Fork workflows use this action instead of upstream's `.github/actions/setup-bun`, which we do not edit. It installs the same Bun version, but caches the installed `node_modules` trees keyed by `bun.lock`, `patches/**` and the workspace `package.json` files. An exact hit skips `bun install`; a partial hit runs it to complete the tree. With `install: "false"` it only puts Bun on `PATH`. It saves the cache only outside pull requests: `fork-sync` saves it for each merged lockfile, and `fork-ci` does so on pushes to `custom` that change those inputs.
 
 ```yaml
 name: "Fork setup Bun"
@@ -801,9 +804,9 @@ runs:
         bun-version-file: ${{ !steps.bun-url.outputs.url && 'package.json' || '' }}
         bun-download-url: ${{ steps.bun-url.outputs.url }}
 
-    # Caching the installed tree instead of Bun's global download cache turns an
-    # exact hit into a no-op install. A partial hit from restore-keys is
-    # completed by `bun install` below.
+    # Caching the installed tree instead of Bun's global download cache lets an
+    # exact hit skip `bun install`. A partial hit from restore-keys is completed
+    # by `bun install` below.
     - name: Restore node_modules
       id: cache
       if: inputs.install == 'true'
@@ -813,7 +816,7 @@ runs:
           node_modules
           packages/*/node_modules
           packages/*/*/node_modules
-        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**', 'package.json', 'packages/*/package.json', 'packages/*/*/package.json') }}
         restore-keys: |
           ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-
 
@@ -822,8 +825,11 @@ runs:
       shell: bash
       run: python3 -m pip install setuptools || pip install setuptools || true
 
+    # An exact hit already holds the result of this lockfile's install, including
+    # the root postinstall (which only touches node_modules), so skip the ~6 s
+    # verification pass.
     - name: Install dependencies
-      if: inputs.install == 'true'
+      if: inputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: bun install
 

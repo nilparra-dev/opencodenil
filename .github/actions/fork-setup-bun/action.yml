@@ -33,9 +33,9 @@ runs:
         bun-version-file: ${{ !steps.bun-url.outputs.url && 'package.json' || '' }}
         bun-download-url: ${{ steps.bun-url.outputs.url }}
 
-    # Caching the installed tree instead of Bun's global download cache turns an
-    # exact hit into a no-op install. A partial hit from restore-keys is
-    # completed by `bun install` below.
+    # Caching the installed tree instead of Bun's global download cache lets an
+    # exact hit skip `bun install`. A partial hit from restore-keys is completed
+    # by `bun install` below.
     - name: Restore node_modules
       id: cache
       if: inputs.install == 'true'
@@ -45,7 +45,7 @@ runs:
           node_modules
           packages/*/node_modules
           packages/*/*/node_modules
-        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**', 'package.json', 'packages/*/package.json', 'packages/*/*/package.json') }}
         restore-keys: |
           ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-
 
@@ -54,8 +54,11 @@ runs:
       shell: bash
       run: python3 -m pip install setuptools || pip install setuptools || true
 
+    # An exact hit already holds the result of this lockfile's install, including
+    # the root postinstall (which only touches node_modules), so skip the ~6 s
+    # verification pass.
     - name: Install dependencies
-      if: inputs.install == 'true'
+      if: inputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: bun install
 
