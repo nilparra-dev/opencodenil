@@ -15,3 +15,5 @@ export {
   SessionMessage,
 } from "@opencode-ai/client/effect"
 export type { OpenCodeEvent } from "@opencode-ai/client/effect"
+
+// ci affected-path check (throwaway)
