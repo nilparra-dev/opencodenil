@@ -28,6 +28,12 @@ type Active = {
 }
 
 const Context = createContext<ReturnType<typeof init>>()
+// Lets the dialog rendered in a layer opt out of closing on a backdrop click.
+const LayerContext = createContext<{ setBackdropDismiss: (value: boolean) => void }>()
+
+export function useDialogLayer() {
+  return useContext(LayerContext)
+}
 
 function init() {
   const [stack, setStack] = createSignal<Active[]>([])
@@ -81,10 +87,12 @@ function init() {
     let dispose: (() => void) | undefined
     let setClosing: ((closing: boolean) => void) | undefined
 
+    // Stacked dialogs render as sibling portals, so only the top layer may own the focus trap.
     const node = runWithOwner(owner, () =>
       createRoot((d: () => void) => {
         dispose = d
         const [closing, setClosingSignal] = createSignal(false)
+        const [backdropDismiss, setBackdropDismiss] = createSignal(true)
         setClosing = setClosingSignal
         return (
           <Kobalte
@@ -99,7 +107,9 @@ function init() {
               <Kobalte.Overlay
                 data-component="dialog-overlay"
                 style={{ "z-index": String(zIndex) }}
-                onClick={() => close(id)}
+                onClick={() => {
+                  if (backdropDismiss()) close(id)
+                }}
               />
               <div
                 data-dialog-layer={layer}
@@ -113,7 +123,7 @@ function init() {
                   "pointer-events": "none",
                 }}
               >
-                {element()}
+                <LayerContext.Provider value={{ setBackdropDismiss }}>{element()}</LayerContext.Provider>
               </div>
             </Kobalte.Portal>
           </Kobalte>

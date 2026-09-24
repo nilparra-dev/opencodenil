@@ -3,8 +3,6 @@ import { dict as en } from "./en"
 
 export const dict = {
   ...en,
-  "go.promo.spaceBunny": "Space Bunny Free — новая анонимная модель, доступная в течение ограниченного времени",
-  "go.graph.bonus": "Лимит ×{{count}}",
   "nav.github": "GitHub",
   "nav.docs": "Документация",
   "nav.changelog": "Список изменений",
@@ -60,7 +58,6 @@ export const dict = {
   "common.cancel": "Отмена",
   "common.creating": "Создание...",
   "common.create": "Создать",
-  "common.contactUs": "Свяжитесь с нами",
 
   "common.videoUnsupported": "Ваш браузер не поддерживает видео тег.",
   "common.figure": "Рис {{n}}.",
@@ -233,9 +230,6 @@ export const dict = {
   "zen.faq.q8": "Могу ли я использовать Zen с другими кодинг-агентами?",
   "zen.faq.a8":
     "Хотя Zen отлично работает с OpenCode, вы можете использовать Zen с любым агентом. Следуйте инструкциям по настройке в вашем любимом агенте.",
-  "zen.faq.q9": "Могу ли я получить возврат средств?",
-  "zen.faq.a9":
-    "Вы можете претендовать на возврат, если списание произошло в течение последних 14 дней и средства, полученные при этой покупке, не были использованы. {{contact}}, чтобы запросить возврат.",
 
   "zen.cta.start": "Начать работу с Zen",
   "zen.pricing.title": "Пополнить баланс на $20 (Pay as you go)",
@@ -264,6 +258,7 @@ export const dict = {
   "zen.privacy.exceptionsLink": "следующими исключениями",
 
   "go.title": "OpenCode Go | Недорогие модели для кодинга для всех",
+  "go.banner.text": "DeepSeek V4 Flash получает 2x лимиты использования на ограниченное время",
   "go.meta.description":
     "Go стоит $10/месяц и предлагает щедрые лимиты использования и надежный доступ к ведущим моделям для кодинга.",
   "go.hero.title": "Недорогие модели для кодинга для всех",
@@ -280,16 +275,6 @@ export const dict = {
   "go.graph.freePill": "Big Pickle и бесплатные модели",
   "go.graph.go": "Go",
   "go.graph.label": "Запросов за 5 часов",
-  "go.graph.period": "Использование",
-  "go.graph.model": "Модель",
-  "go.graph.requests": "Примерное число запросов / 5 ч",
-  "go.graph.allowance": "Использование за месяц",
-  "go.graph.new": "Новое",
-  "go.graph.scale": "Нелинейная шкала числа запросов",
-  "go.graph.showAll": "Показать все модели ({{count}})",
-  "go.graph.showLess": "Показать меньше моделей",
-  "go.graph.limitedRegions": "доступно в отдельных регионах",
-  "go.graph.limitedTime": "ограниченное время",
   "go.graph.usageLimits": "Лимиты использования",
   "go.graph.aria": "Запросов за 5ч: {{free}} против {{go}}",
 
@@ -324,7 +309,8 @@ export const dict = {
   "go.problem.item3": "Создан для максимального числа программистов",
   "go.problem.item4": "Отобранные модели, протестированные для агентного программирования",
   "go.how.title": "Как работает Go",
-  "go.how.body": "Go стоит $10/месяц. Вы можете использовать его с OpenCode или любым агентом.",
+  "go.how.body":
+    "Go стоит $10/месяц. Вы можете использовать его с OpenCode или любым агентом.",
   "go.how.step1.title": "Создайте аккаунт",
   "go.how.step1.beforeLink": "следуйте",
   "go.how.step1.link": "инструкциям по настройке",
@@ -364,16 +350,13 @@ export const dict = {
   "go.faq.a5.used": "Используется",
   "go.faq.a5.notUsed": "Не используется",
   "go.faq.a5.noAgreement": "Нет соглашения",
-  "go.faq.a5.notZdr": "Не ZDR",
   "go.faq.a5.grokRetention":
     "ZDR отключает важные функции API, зависящие от сохраненных данных, включая Responses API с сохранением состояния, Files and Collections и Batch API.",
   "go.faq.a5.gptRetention":
     "Журналы мониторинга злоупотреблений создаются при любом использовании функций API и хранятся до 30 дней.",
   "go.faq.a5.learnMore": "Подробнее",
   "go.faq.a5.deepseekRetention":
-    "Соглашение ZDR продлевается ежемесячно. Текущее соглашение действует до 30 сентября 2026 года.",
-  "go.faq.a5.museRetention":
-    "Значительно сниженная стоимость токенов в обмен на разрешение использовать ваши промпты и ответы для обучения будущих моделей Meta.",
+    "Соглашение ZDR продлевается ежемесячно. Текущее соглашение действует до 31 августа 2026 года.",
 
   "go.faq.a5.beforeExceptions":
     "Модели Go размещены в США. Провайдеры следуют политике нулевого хранения и не используют ваши данные для обучения моделей, за",
@@ -388,10 +371,7 @@ export const dict = {
 
   "go.faq.q9": "В чем разница между бесплатными моделями и Go?",
   "go.faq.a9":
-    "Бесплатные модели включают Big Pickle и доступные на данный момент промо-модели с квотой 200 запросов/день. Go предлагает набор отобранных моделей с более высокими квотами запросов, применяемыми в скользящих окнах (5 часов, неделя и месяц), что примерно эквивалентно базовым лимитам $12 за 5 часов, $30 в неделю и $60 в месяц; лимиты для отдельных моделей могут отличаться (фактическое количество запросов зависит от модели и использования).",
-  "go.faq.q10": "Могу ли я получить возврат средств?",
-  "go.faq.a10":
-    "Вы можете претендовать на возврат, если списание произошло в течение последних 14 дней и вы не использовали лимит Go в этом расчетном периоде. {{contact}}, чтобы запросить возврат.",
+    "Бесплатные модели включают Big Pickle и доступные на данный момент промо-модели с квотой 200 запросов/день. Go предлагает набор отобранных моделей с более высокими квотами запросов, применяемыми в скользящих окнах (5 часов, неделя и месяц), что примерно эквивалентно $12 за 5 часов, $30 в неделю и $60 в месяц (фактическое количество запросов зависит от модели и использования).",
 
   "zen.api.error.rateLimitExceeded": "Превышен лимит запросов. Пожалуйста, попробуйте позже.",
   "zen.api.error.modelNotSupported": "Модель {{model}} не поддерживается",
@@ -417,9 +397,6 @@ export const dict = {
   "zen.api.error.modelDisabled": "Модель отключена",
   "zen.api.error.regionNotAllowed":
     "Последняя версия этой модели размещена только в Китае. Чтобы использовать её, необходимо явно подтвердить согласие: {{consoleGoUrl}}",
-  "zen.api.error.countryNotAllowed": "Эта модель недоступна в вашей стране.",
-  "zen.api.error.trainingNotAllowed":
-    "Эта модель собирает данные, которые используются для улучшения её качества, и требует явного согласия: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
     "Бесплатная акция для {{model}} завершена. Вы можете продолжить использование модели, подписавшись на OpenCode Go - {{link}}",
 
@@ -694,24 +671,15 @@ export const dict = {
   "workspace.lite.time.fewSeconds": "несколько секунд",
   "workspace.lite.subscription.message": "Вы подписаны на OpenCode Go.",
   "workspace.lite.subscription.manage": "Управление подпиской",
-  "workspace.lite.subscription.rollingUsage": "Использование за 5 часов",
-  "workspace.lite.subscription.rollingQuota": "Квота на 5 часов",
+  "workspace.lite.subscription.rollingUsage": "Скользящее использование",
   "workspace.lite.subscription.weeklyUsage": "Недельное использование",
-  "workspace.lite.subscription.weeklyQuota": "Недельная квота",
   "workspace.lite.subscription.monthlyUsage": "Ежемесячное использование",
-  "workspace.lite.subscription.monthlyQuota": "Ежемесячная квота",
   "workspace.lite.subscription.resetsIn": "Сброс через",
-  "workspace.lite.subscription.showDetails": "Показать подробности",
-  "workspace.lite.subscription.hideDetails": "Скрыть подробности",
-  "workspace.lite.subscription.model": "Модель",
-  "workspace.lite.subscription.contribution": "%",
-  "workspace.lite.subscription.total": "Итого",
   "workspace.lite.subscription.useBalance": "Использовать доступный баланс после достижения лимитов",
   "workspace.lite.subscription.selectProvider":
     'Выберите "OpenCode Go" в качестве провайдера в настройках opencode для использования моделей Go.',
   "workspace.lite.providers.title": "Провайдеры",
   "workspace.lite.providers.description": "Управляйте провайдерами, используемыми для маршрутизации.",
-  "workspace.lite.providers.allowTraining": "Разрешить модели, обучающиеся на данных запросов",
   "workspace.lite.providers.useChina": "Включить модели, размещенные в Китае",
   "workspace.lite.black.message":
     "Вы подписаны на OpenCode Black или находитесь в списке ожидания. Пожалуйста, сначала отмените подписку, если хотите перейти на Go.",

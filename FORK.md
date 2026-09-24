@@ -3,10 +3,10 @@
 > **For agents:** read this whole file before making any change to this repository.
 > Where it conflicts with `AGENTS.md`, this file wins, but only for branches, remotes, syncing and CI. The style, testing and typecheck rules in `AGENTS.md` still apply.
 
-This repository is a fork of [`anomalyco/opencode`](https://github.com/anomalyco/opencode), called **upstream** below. It has two goals:
+This repository is a fork of [`anomalyco/opencode`](https://github.com/anomalyco/opencode), called **upstream** below. It follows upstream's **V2 line** (`@opencode/cli`, the `v2` branch and its `v2.X.Y` release tags). It has two goals:
 
 1. Keep our own changes and improvements.
-2. Receive every upstream update **automatically**, with as little manual work as possible.
+2. Receive every upstream release **automatically**, with as little manual work as possible.
 
 To get there, everything here is designed to **keep our diff against upstream as small and as isolated as possible**. Every line we change in upstream code can become a future conflict.
 
@@ -16,45 +16,53 @@ To get there, everything here is designed to **keep our diff against upstream as
 
 These are the configured values for this fork.
 
-| Variable          | Value                                       | Description                          |
-| ----------------- | ------------------------------------------- | ------------------------------------ |
-| `FORK_OWNER`      | `nilparra-dev`                              | Owner of the fork                    |
-| `FORK_REPO`       | `opencodenil`                               | Fork repository name                 |
-| `UPSTREAM_URL`    | `https://github.com/anomalyco/opencode.git` | Original repository                  |
-| `UPSTREAM_BRANCH` | `dev`                                       | Upstream default branch              |
-| `FORK_BRANCH`     | `custom`                                    | Main fork branch (our code)          |
-| `SYNC_BRANCH`     | `sync-upstream`                             | Branch the bot uses for syncs        |
+| Variable               | Value                                       | Description                                       |
+| ---------------------- | ------------------------------------------- | ------------------------------------------------- |
+| `FORK_OWNER`           | `nilparra-dev`                              | Owner of the fork                                 |
+| `FORK_REPO`            | `opencodenil`                               | Fork repository name                              |
+| `UPSTREAM_URL`         | `https://github.com/anomalyco/opencode.git` | Original repository                               |
+| `UPSTREAM_TAG_PATTERN` | `^v2\.[0-9]+\.[0-9]+$`                      | Upstream releases we follow (stable V2 tags only) |
+| `FORK_BRANCH`          | `custom`                                    | Main fork branch (our code)                       |
+| `SYNC_BRANCH`          | `sync-upstream`                             | Branch the bot uses for syncs                     |
 
 ---
 
 ## 1. Branch and remote model
 
 ```
-upstream/dev  ──●──●──●──●──●──●──●──●──►   (anomalyco/opencode; read-only for us)
-                 \           \        \
-origin/custom  ───●──○──○─────●──○─────●──►  (our main branch and the fork's default branch)
-                     ↑  ↑     ↑         ↑
-                   our    upstream   upstream
-                 commits   merge      merge
+upstream tags  ── v2.0.16 ─────── v2.0.17 ───── v2.0.18 ──►   (anomalyco/opencode; read-only for us)
+                      \               \              \
+origin/custom  ────────●──○──○─────────●──○───────────●──►    (our main branch and the fork's default branch)
+                          ↑  ↑         ↑              ↑
+                        our commits  upstream      upstream
+                                     release       release
+                                     merge         merge
 ```
 
 - **Remotes:**
   - `origin`: our fork (`github.com/nilparra-dev/opencodenil`).
   - `upstream`: `anomalyco/opencode`. **Never** push to `upstream`.
+- **What we follow: release tags, not a branch tip.** The sync merges the newest stable tag matching `UPSTREAM_TAG_PATTERN` (`v2.0.16`, `v2.0.17`…). A tag is exactly what upstream shipped, so `custom` is always "upstream release X plus our changes". Upstream's `v2` branch runs ahead of the latest tag; we never merge it directly.
 - **Branches:**
-  - `custom`: the fork's main branch and its **default branch on GitHub**. It holds upstream plus our changes, and only receives changes through Pull Requests.
-  - `sync-upstream`: a throwaway bot branch. It holds `custom` with the latest `upstream/dev` merged on top.
+  - `custom`: the fork's main branch and its **default branch on GitHub**. It holds the latest upstream release plus our changes, and only receives changes through Pull Requests.
+  - `sync-upstream`: a throwaway bot branch. It holds `custom` with the newest upstream release merged on top.
   - Work branches: branch off `custom` and return to `custom` through a PR. Names are at most three words separated by hyphens, with no slashes (per `AGENTS.md`). Examples: `custom-theme`, `fix-sync-ci`.
-  - The fork has no `dev` branch of its own. Upstream is always referenced as `upstream/dev`.
+  - The fork has no `dev` or `v2` branch of its own.
 - **Integration strategy: MERGE, not rebase.** `custom` is public and the bot works on it. Merging never rewrites history, never needs a force-push, resolves each conflict only once (and `rerere` remembers the resolution), and is safe to automate.
 - **Critical rule:** sync PRs (`sync-upstream → custom`) are always integrated with a **merge commit**, **never with squash or rebase**. A squash breaks the ancestry link with upstream, and every later sync brings back the same conflicts.
 
 ### Note on `AGENTS.md` in this fork
 
-`AGENTS.md` says the default branch is `dev` and that diffs use `dev` or `origin/dev`. **In this fork, read that as:**
+`AGENTS.md` says the default branch is `v2`. **In this fork, read that as:**
 
 - Base branch for work and PRs: `custom` (`origin/custom`).
-- Diff for "what have we changed relative to upstream": `git diff upstream/dev...custom`.
+- Diff for "what have we changed relative to upstream": `git diff <latest v2 tag>...custom`, for example `git diff v2.0.16...custom`. The command in section 7 finds the tag for you.
+
+### History: the move from V1 to V2
+
+Until September 2026 the fork followed `upstream/dev`, the V1 line (`opencode-ai`, `packages/opencode`). V1 went into maintenance while upstream's work moved to `v2`, so the fork moved too: `custom` was rebuilt from the `v2.0.16` tag with the fork changes ported, and the old `custom` history was joined with an `ours` merge so no force-push was needed. The V1-only patches were retired (see the end of section 7).
+
+After moving from a V1 build to a V2 build, **log in to Anthropic again with "Claude Pro/Max"**. V2 imports V1 OAuth logins under a generic `oauth` method that has no refresh and is not recognized as a subscription.
 
 ---
 
@@ -64,16 +72,16 @@ Steps marked 👤 need a human (browser, credentials or decisions). An agent wit
 
 ### 2.1 👤 Decision: public fork or private repository
 
-| Option | How it is created | Pros | Cons |
-| --- | --- | --- | --- |
-| **A. Public fork** (*Fork* button) | GitHub → Fork | Visible link to upstream; PRs to upstream can be opened directly | Must be **public** |
-| **B. Private repository** | Create an empty private repo and push | Code stays private | Contributing to upstream needs a separate public fork |
+| Option                             | How it is created                     | Pros                                                             | Cons                                                  |
+| ---------------------------------- | ------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------- |
+| **A. Public fork** (_Fork_ button) | GitHub → Fork                         | Visible link to upstream; PRs to upstream can be opened directly | Must be **public**                                    |
+| **B. Private repository**          | Create an empty private repo and push | Code stays private                                               | Contributing to upstream needs a separate public fork |
 
-Upstream is MIT-licensed, so both options are valid. The rest of this document works the same for A and B.
+Upstream is MIT-licensed, so both options are valid. The rest of this document works the same for A and B. This fork uses option A.
 
 ### 2.2 Create the repository and remotes
 
-Starting from an existing upstream clone, such as the one on this machine:
+Starting from an existing upstream clone:
 
 ```bash
 # Option A: create the public fork (copy all branches, not only the default one)
@@ -84,13 +92,14 @@ gh repo create nilparra-dev/opencodenil --private
 git remote rename origin upstream          # the current clone points at anomalyco → it becomes upstream
 git remote add origin https://github.com/nilparra-dev/opencodenil.git
 git remote set-url --push upstream DISABLED # prevents accidental pushes to upstream
-git fetch upstream
+git fetch upstream --tags
 
-git checkout -b custom upstream/dev
+tag=$(git tag -l 'v2.*' | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+git checkout -b custom "$tag"
 git push -u origin custom
 gh repo edit nilparra-dev/opencodenil --default-branch custom
-# Option A: delete the dev branch copied by the fork, so it causes no confusion and cannot trigger upstream workflows
-git push origin --delete dev
+# Option A: delete the branches copied by the fork that could trigger upstream workflows
+git push origin --delete dev v2
 ```
 
 ### 2.3 Local git configuration (on every machine and every clone)
@@ -103,7 +112,7 @@ git config pull.ff only                   # never create implicit merges with a 
 git config fetch.prune true
 ```
 
-On Windows, the repository also contains symlinks (for example `packages/app/src/custom-elements.d.ts`). Enable Developer Mode (Settings → System → For developers) so git can create them, then run `git config core.symlinks true` and `git checkout -- .` on a clean tree. Without this, those files are checked out as text files holding the target path, and `bun typecheck` in the `pre-push` hook fails in `@opencode-ai/app` and `@opencode-ai/enterprise`.
+On Windows, the repository may contain symlinks. Enable Developer Mode (Settings → System → For developers) so git can create them, then run `git config core.symlinks true` and `git checkout -- .` on a clean tree. Without this, symlinks are checked out as text files holding the target path and typecheck fails in the packages that use them.
 
 ### 2.4 👤 Token for the sync bot
 
@@ -114,14 +123,14 @@ On Windows, the repository also contains symlinks (for example `packages/app/src
 
 Create a **fine-grained personal access token** scoped to `nilparra-dev/opencodenil` with these permissions:
 
-| Permission | Level |
-| --- | --- |
-| Contents | Read and write |
-| Pull requests | Read and write |
-| Issues | Read and write |
-| Workflows | Read and write |
-| Actions | Read and write (needed to disable workflows) |
-| Metadata | Read (required) |
+| Permission    | Level                                        |
+| ------------- | -------------------------------------------- |
+| Contents      | Read and write                               |
+| Pull requests | Read and write                               |
+| Issues        | Read and write                               |
+| Workflows     | Read and write                               |
+| Actions       | Read and write (needed to disable workflows) |
+| Metadata      | Read (required)                              |
 
 Store it as a secret:
 
@@ -151,17 +160,17 @@ gh label create needs-review         --color FBCA04 --description "Resolved by a
 👤 In the UI (Settings → Branches → Add rule, or Rulesets) for the `custom` branch:
 
 - **Require a pull request before merging** (no required approvals if you work alone; otherwise 1).
-- **Require status checks to pass**: select `typecheck` and `test`, the job checks from `fork-ci`. They only show up after `fork-ci` has run once.
+- **Require status checks to pass**: select `typecheck` and `test`, the aggregate checks from `fork-ci`. They only show up after `fork-ci` has run once.
 - **Block force pushes** and **Restrict deletions**.
 
 👤 In Settings → Actions → General:
 
 - Enable Actions. They are disabled by default on forks.
-- Under *Workflow permissions*, keep "Read repository contents" (each workflow requests what it needs).
+- Under _Workflow permissions_, keep "Read repository contents" (each workflow requests what it needs).
 
 ### 2.6 Disable upstream workflows in the fork
 
-Upstream ships about 25 workflows (`publish.yml`, `deploy.yml`, `triage.yml`, `test.yml`…). They **must not run** in the fork, for three reasons:
+Upstream ships many workflows (`publish.yml`, `deploy.yml`, `triage.yml`, `test.yml`…). They **must not run** in the fork, for three reasons:
 
 - They use `blacksmith-*` runners we don't have, so their jobs sit in the queue until they fail.
 - They need upstream's secrets.
@@ -177,11 +186,7 @@ gh workflow list --repo nilparra-dev/opencodenil --all --limit 200 --json path,s
 
 **Convention:** every fork workflow is named `.github/workflows/fork-*.yml`. No upstream file will ever have that prefix, so fork workflows never conflict.
 
-### 2.7 Create the fork files
-
-Create the files from [section 4](#4-fork-files) on `custom` and land them with a PR titled `chore(fork): add sync automation`.
-
-### 2.8 Verify the setup
+### 2.7 Verify the setup
 
 ```bash
 gh workflow run fork-sync.yml --repo nilparra-dev/opencodenil
@@ -190,7 +195,7 @@ gh run watch --repo nilparra-dev/opencodenil
 
 Expected result: the workflow finishes green and one of these three things happens:
 
-- There was nothing new upstream.
+- There was no new upstream release.
 - A `chore(fork): sync upstream` PR was created with auto-merge enabled.
 - A `fork-sync-conflict` issue was opened.
 
@@ -204,10 +209,12 @@ every hour / manual
       ▼
 fork-sync.yml ──► disables upstream workflows that are not fork-*
       │
-      ├─ does the base already contain upstream/dev and custom? ──► yes: stop (compare API, no clone)
+      ├─ newest upstream tag matching v2.X.Y (git ls-remote, no clone)
+      │
+      ├─ does the base already contain that tag and custom? ──► yes: stop (compare API, no clone)
       │     base = the open sync PR branch if there is one, otherwise custom
       ▼
- merge what is missing (custom, then upstream/dev) into sync-upstream, starting from the base
+ merge what is missing (custom, then the tag) into sync-upstream, starting from the base
       │
       ├─ no conflicts ──► regenerate client ──► push ──► PR (label fork-sync, auto-merge with merge commit)
       │                                                     │
@@ -223,9 +230,9 @@ fork-sync.yml ──► disables upstream workflows that are not fork-*
                             └─ otherwise a local agent resolves it following section 6
 ```
 
-- The schedule is hourly. Upstream lands about 250 commits a month, and syncing often keeps each merge small.
-- When upstream has not changed, the workflow answers from the GitHub compare API without cloning and finishes in seconds.
-- While a sync PR is open, the run builds on `sync-upstream` instead of rebuilding it from `custom`, so fixes pushed to the sync branch (section 6) are kept. It merges new `custom` commits into it (branch protection requires PRs to be up to date with `custom`, so otherwise auto-merge would stall) and then new upstream commits. A sync PR that already contains both is left alone.
+- The schedule is hourly. Upstream publishes about one V2 release a day, so most runs find nothing new.
+- The newest release is found with `git ls-remote` on upstream's tags; when the base already contains it, the workflow answers from the GitHub compare API without cloning and finishes in seconds.
+- While a sync PR is open, the run builds on `sync-upstream` instead of rebuilding it from `custom`, so fixes pushed to the sync branch (section 6) are kept. It merges new `custom` commits into it (branch protection requires PRs to be up to date with `custom`, so otherwise auto-merge would stall) and then a newer release, if one appeared. A sync PR that already contains both is left alone.
 - An open `fork-sync-conflict` issue is kept current by editing its body, not by adding a comment on every run.
 - The sync PR is updated by pushing `sync-upstream`, which is a bot branch. `custom` is **never** force-pushed.
 - Checkouts that only need history (`fork-sync`, the `publish` jobs) are blobless (`filter: blob:none`); `fork-resolve` keeps a full clone because the agent reads history.
@@ -234,449 +241,44 @@ fork-sync.yml ──► disables upstream workflows that are not fork-*
 
 ## 4. Fork files
 
-All of these files are **fork-only**: upstream does not have them, so they never conflict.
+All of these files are **fork-only**: upstream does not have them, so they never conflict. The files themselves are the source of truth; this section explains what they do and why.
 
-| File | Purpose |
-| --- | --- |
-| `FORK.md` | This document: rules and patch ledger |
-| `CLAUDE.md` | Makes Claude Code load `AGENTS.md` and `FORK.md` |
-| `.github/workflows/fork-sync.yml` | Automatic sync |
-| `.github/workflows/fork-ci.yml` | Fork CI (standard GitHub runners) |
-| `.github/workflows/fork-resolve.yml` | (Optional) Conflict resolution by an agent |
-| `.github/actions/fork-setup-bun/action.yml` | Bun setup for fork workflows, caching `node_modules` by lockfile |
+| File                                                        | Purpose                                                                        |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `FORK.md`                                                   | This document: rules and patch ledger                                          |
+| `CLAUDE.md`                                                 | Makes Claude Code load `AGENTS.md` and `FORK.md` (`@AGENTS.md` and `@FORK.md`) |
+| `.github/workflows/fork-sync.yml`                           | Automatic sync with upstream releases (section 3)                              |
+| `.github/workflows/fork-ci.yml`                             | Fork CI on standard GitHub runners (4.2)                                       |
+| `.github/workflows/fork-resolve.yml`                        | (Optional) Conflict resolution by an agent (4.3)                               |
+| `.github/actions/fork-setup-bun/action.yml`                 | Bun setup for fork workflows, caching `node_modules` by lockfile (4.4)         |
+| `packages/core/src/plugin/provider/fork-anthropic-oauth.ts` | Claude Pro/Max login (ledger F-002)                                            |
+| `packages/core/test/plugin/fork-anthropic-oauth.test.ts`    | Tests for it                                                                   |
 
-The only change to an upstream file that the infrastructure needs, so agents can find this document, is one line at the top of `AGENTS.md` (see 4.5). It is recorded in the ledger.
+The only changes to upstream files are the ones in the ledger (section 7).
 
-### 4.1 `CLAUDE.md`
+### 4.1 `fork-sync.yml`
 
-```markdown
-@AGENTS.md
-@FORK.md
-```
+Described in section 3. Security notes that must stay true when editing it:
 
-### 4.2 `.github/workflows/fork-sync.yml`
+- `FORK_SYNC_TOKEN` is only exposed to steps that call `gh` or push, never to steps that run repository code (`bun install`, `bun run generate`).
+- The job that runs repository code has read-only permissions. It hands the merged branch to a separate `publish` job as a Git bundle, and only `publish` pushes.
 
-```yaml
-name: fork-sync
-
-on:
-  schedule:
-    - cron: "17 * * * *"
-  workflow_dispatch:
-
-concurrency:
-  group: fork-sync
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-
-env:
-  UPSTREAM_REPO: anomalyco/opencode
-  UPSTREAM_BRANCH: dev
-  FORK_BRANCH: custom
-  SYNC_BRANCH: sync-upstream
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      behind: ${{ steps.fetch.outputs.behind }}
-      conflict: ${{ steps.merge.outputs.conflict }}
-    steps:
-      - name: Disable upstream workflows
-        env:
-          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          gh workflow list --all --limit 200 --json path,state \
-            --jq '.[] | select(.state=="active") | select(.path | startswith(".github/workflows/fork-") | not) | .path' |
-            while read -r p; do
-              echo "disabling $p"
-              gh workflow disable "$(basename "$p")"
-            done
-
-      # Hourly runs are cheap because the no-op case is answered by the compare
-      # API without cloning. Any API failure falls through to the full check.
-      # While a sync PR is open, the run builds on the sync branch instead of
-      # rebuilding it from custom, so fixes pushed there survive. It merges in
-      # whatever the branch lacks: new upstream commits, and new custom commits
-      # (branch protection requires PRs to be up to date with custom). A sync
-      # PR that already has both is left alone.
-      - name: Check for changes
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          compare() { gh api "repos/$GITHUB_REPOSITORY/compare/$1...$2?per_page=1" --jq .status || echo unknown; }
-          contains() { local s; s=$(compare "$1" "$2"); echo "compare $1...$2: $s" >&2; [ "$s" = identical ] || [ "$s" = behind ]; }
-          upstream="${UPSTREAM_REPO/\//:}:$UPSTREAM_BRANCH"
-          open=$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number --jq length || echo 0)
-          if [ "$open" != 0 ]; then base="$SYNC_BRANCH"; else base="$FORK_BRANCH"; fi
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-          if contains "$base" "$upstream" && contains "$base" "$FORK_BRANCH"; then
-            echo "new=false" >> "$GITHUB_OUTPUT"
-            echo "$base already contains $UPSTREAM_REPO/$UPSTREAM_BRANCH and $FORK_BRANCH"
-          else
-            echo "new=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout fork
-        if: steps.check.outputs.new == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.check.outputs.base }}
-          fetch-depth: 0
-          filter: blob:none
-          persist-credentials: false
-
-      - name: Fetch upstream
-        id: fetch
-        if: steps.check.outputs.new == 'true'
-        run: |
-          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
-          git fetch --no-tags upstream "+refs/heads/$UPSTREAM_BRANCH:refs/remotes/upstream/$UPSTREAM_BRANCH"
-          echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
-          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD && git merge-base --is-ancestor "origin/$FORK_BRANCH" HEAD; then
-            echo "behind=false" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.check.outputs.base }} already contains upstream/$UPSTREAM_BRANCH and $FORK_BRANCH"
-          else
-            echo "behind=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Starting from custom, only the upstream merge happens. Starting from an
-      # open sync branch, custom is merged first when it has new commits.
-      - name: Merge
-        id: merge
-        if: steps.fetch.outputs.behind == 'true'
-        env:
-          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$SYNC_BRANCH"
-          for ref in "origin/$FORK_BRANCH" "upstream/$UPSTREAM_BRANCH"; do
-            if git merge-base --is-ancestor "$ref" HEAD; then continue; fi
-            if [ "$ref" = "origin/$FORK_BRANCH" ]; then msg="chore(fork): merge $FORK_BRANCH into $SYNC_BRANCH"; else msg="chore(fork): merge upstream $UPSTREAM_SHA"; fi
-            if ! git merge --no-ff --no-edit "$ref" -m "$msg"; then
-              echo "$ref" > "$RUNNER_TEMP/conflict-ref.txt"
-              git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
-              git merge --abort
-              echo "conflict=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "conflict=false" >> "$GITHUB_OUTPUT"
-
-      # Runs on the default branch, so it also saves the node_modules cache for
-      # the merged lockfile before fork-ci needs it on the sync PR.
-      - name: Setup Bun
-        if: steps.merge.outputs.conflict == 'false'
-        uses: ./.github/actions/fork-setup-bun
-
-      - name: Regenerate client
-        if: steps.merge.outputs.conflict == 'false'
-        working-directory: packages/client
-        run: |
-          bun run generate
-          if ! git diff --quiet -- src/generated src/generated-effect; then
-            git add src/generated src/generated-effect
-            git commit -m "chore(fork): regenerate client after upstream merge"
-          fi
-
-      - name: Bundle sync branch
-        if: steps.merge.outputs.conflict == 'false'
-        run: git bundle create "$RUNNER_TEMP/sync-upstream.bundle" "$SYNC_BRANCH" "^origin/$FORK_BRANCH"
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: steps.merge.outputs.conflict == 'false'
-        with:
-          name: sync-upstream
-          path: ${{ runner.temp }}/sync-upstream.bundle
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Report conflict
-        if: steps.merge.outputs.conflict == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
-        run: |
-          {
-            echo "Merging \`$(cat "$RUNNER_TEMP/conflict-ref.txt")\` into \`$SYNC_BRANCH\` (base \`${{ steps.check.outputs.base }}\`, upstream ${{ steps.fetch.outputs.upstream_sha }}) has conflicts."
-            echo
-            echo "Conflicted files:"
-            echo
-            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
-            echo
-            echo "Resolve following section 6 of \`FORK.md\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          } > "$RUNNER_TEMP/body.md"
-          # Hourly runs keep one open issue current instead of adding a comment each time.
-          existing=$(gh issue list --label fork-sync-conflict --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" --body-file "$RUNNER_TEMP/body.md"
-          else
-            gh issue create --title "Upstream sync conflict" --label fork-sync-conflict --body-file "$RUNNER_TEMP/body.md"
-          fi
-
-  publish:
-    needs: sync
-    if: needs.sync.outputs.behind == 'true' && needs.sync.outputs.conflict == 'false'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.FORK_BRANCH }}
-          fetch-depth: 0
-          filter: blob:none
-          persist-credentials: false
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sync-upstream
-          path: ${{ runner.temp }}
-
-      - name: Load and verify sync branch
-        run: |
-          git bundle verify "$RUNNER_TEMP/sync-upstream.bundle"
-          git fetch "$RUNNER_TEMP/sync-upstream.bundle" "$SYNC_BRANCH:refs/heads/$SYNC_BRANCH"
-          git merge-base --is-ancestor "origin/$FORK_BRANCH" "$SYNC_BRANCH" || { echo "custom advanced during sync; rerun the sync" >&2; exit 1; }
-
-      - name: Push and open PR
-        env:
-          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
-        run: |
-          gh auth setup-git
-          git push --force origin "$SYNC_BRANCH"
-          if ! gh pr view "$SYNC_BRANCH" --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
-            gh pr create \
-              --base "$FORK_BRANCH" --head "$SYNC_BRANCH" \
-              --title "chore(fork): sync upstream" \
-              --label fork-sync \
-              --body "Automated sync with upstream/$UPSTREAM_BRANCH. Merged with a **merge commit** once fork-ci passes. Do not squash."
-          fi
-          gh pr merge "$SYNC_BRANCH" --auto --merge
-```
-
-### 4.3 `.github/workflows/fork-ci.yml`
+### 4.2 `fork-ci.yml`
 
 This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not a replacement for all upstream checks. It runs typecheck, Linux unit tests and the generated-client check, split across parallel jobs:
 
-- `changes` decides what the PR needs. A PR that only touches `*.md` files runs nothing. A PR that touches any other file outside `packages/` (lockfile, patches, workflows, root config; every sync PR) runs everything. Otherwise only the packages that `turbo ls --affected` reports run, which includes every package depending on a changed one. Skipped jobs count as passing for branch protection; if `changes` itself fails, `test` fails.
-- `typecheck (heavy)` (the slowest packages, listed in `HEAVY` in the `changes` job), `typecheck (rest)` (every other affected package, plus the generated-client check), `unit` (affected packages except `opencode`) and eight `opencode (N/8)` shards (`bun test --shard`) run in parallel. Packages upstream adds later fall into `rest` automatically; `HEAVY` only needs revisiting if one group becomes much slower than the other. `packages/opencode` holds almost all the test time, so it is the only package that is sharded. `bun test --shard` splits by file count, not by duration, so shards are uneven; more shards keep the slowest one short.
+- `changes` decides what the PR needs. A PR that only touches `*.md` files runs nothing. A PR that touches any other file outside `packages/` (lockfile, patches, workflows, `services/`, root config; every sync PR) runs everything. Otherwise only the packages that `turbo ls --affected` reports run, which includes every package depending on a changed one. Skipped jobs count as passing for branch protection; if `changes` itself fails, `test` fails.
+- `typecheck (heavy)` (the slowest packages, listed in `HEAVY` in the `changes` job), `typecheck (rest)` (every other affected package, plus the generated-client check), `unit` (affected packages except `@opencode/core`) and eight `core (N/8)` shards (`bun test --shard`) run in parallel. Packages upstream adds later fall into `rest` automatically; `HEAVY` only needs revisiting if one group becomes much slower than the other. `packages/core` holds most of the test time, so it is the only package that is sharded. `bun test --shard` splits by file count, not by duration, so shards are uneven; more shards keep the slowest one short.
 - `typecheck` and `test` aggregate those jobs so branch protection can keep requiring the `typecheck` and `test` checks. Both fail if `changes` fails.
 - It runs on PRs and on demand. Pushes to `custom` run only the `cache` job, and only when the lockfile, patches or a workspace `package.json` change, to save the `node_modules` cache where every PR can read it (caches saved by a PR are private to that PR).
-- Every job installs dependencies through `fork-setup-bun` (4.6), which restores `node_modules` instead of Bun's download cache.
+- Every job installs dependencies through `fork-setup-bun` (4.4), which restores `node_modules` instead of Bun's download cache.
+- The `core` shards install `ripgrep` with apt. Upstream's runners ship `rg`; without it `packages/core` tries to download ripgrep, the test preload blocks the request, and the search tests fail.
 
-Three subprocess timing tests in `packages/opencode/test/cli/run/run-process.test.ts` are excluded by exact test-name filter because they exceeded their 15- or 30-second deadlines under full-suite load; they are listed in section 8. All other unit tests still run. The workflow does not run Windows unit tests, E2E tests or the HttpApi exerciser gates. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
-
-```yaml
-name: fork-ci
-
-on:
-  pull_request:
-    branches: [custom]
-  # Only refreshes the node_modules cache on custom; pull request caches are
-  # not shared between PRs. fork-sync already does this for upstream merges.
-  push:
-    branches: [custom]
-    paths:
-      - bun.lock
-      - patches/**
-      - package.json
-      - packages/*/package.json
-      - packages/*/*/package.json
-      - .github/actions/fork-setup-bun/**
-  workflow_dispatch:
-
-concurrency:
-  group: fork-ci-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-
-jobs:
-  cache:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/fork-setup-bun
-
-  # Decides what the PR needs:
-  # - only *.md files: nothing runs;
-  # - any other file outside packages/ (lockfile, patches, workflows, root
-  #   config): everything runs;
-  # - otherwise: only the packages turbo reports as affected, which includes
-  #   every package that depends on a changed one.
-  changes:
-    if: github.event_name != 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      code: ${{ steps.affected.outputs.code }}
-      typecheck_matrix: ${{ steps.affected.outputs.typecheck_matrix }}
-      unit: ${{ steps.affected.outputs.unit }}
-      unit_filters: ${{ steps.affected.outputs.unit_filters }}
-      opencode: ${{ steps.affected.outputs.opencode }}
-    steps:
-      # A pull_request checkout is GitHub's merge commit, so HEAD^1 is the base
-      # it was merged onto and HEAD^1..HEAD is exactly the PR's change.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - uses: ./.github/actions/fork-setup-bun
-        with:
-          install: "false"
-      - name: Detect affected packages
-        id: affected
-        env:
-          TURBO_TELEMETRY_DISABLED: "1"
-          # Typecheck runs as two groups on separate runners. These packages
-          # take about half of the typecheck time; every other package,
-          # including ones upstream adds later, falls into the "rest" group.
-          HEAVY: |-
-            opencode
-            @opencode-ai/sdk-next
-            @opencode-ai/cli
-            @opencode-ai/server
-        run: |
-          filters() { if [ -n "$1" ]; then sed 's/^/--filter=/' <<< "$1" | paste -sd' '; fi; }
-          flag() { if [ -n "$1" ]; then echo true; else echo false; fi; }
-          # write <heavy filters> <rest filters> <unit filters> <opencode flag>
-          write() {
-            jq -nc --arg heavy "$1" --arg rest "$2" \
-              '[if $heavy != "" then {group: "heavy", filters: $heavy} else empty end, {group: "rest", filters: $rest}]' |
-              sed 's/^/typecheck_matrix=/' >> "$GITHUB_OUTPUT"
-            printf 'code=true\nunit=%s\nunit_filters=%s\nopencode=%s\n' "$(flag "$3")" "$3" "$4" >> "$GITHUB_OUTPUT"
-          }
-          everything() {
-            echo "$1: running everything"
-            write "$(filters "$HEAVY")" "$(sed 's/^/--filter=!/' <<< "$HEAVY" | paste -sd' ')" "--filter=!./packages/opencode" true
-            exit 0
-          }
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then everything "not a pull request"; fi
-          code=$(git diff --name-only HEAD^1 HEAD | grep -vE '\.md$' || true)
-          if [ -z "$code" ]; then
-            echo "only markdown changed: skipping"
-            echo "code=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if grep -qv '^packages/' <<< "$code"; then everything "files outside packages/ changed"; fi
-          names=$(TURBO_SCM_BASE=HEAD^1 TURBO_SCM_HEAD=HEAD \
-            bunx "turbo@$(jq -r .devDependencies.turbo package.json)" ls --affected --output=json |
-            jq -r '.packages.items[].name') || everything "turbo ls failed"
-          echo "affected packages:"
-          echo "$names"
-          write \
-            "$(filters "$(grep -xF "$HEAVY" <<< "$names" || true)")" \
-            "$(filters "$(grep -vxF "$HEAVY" <<< "$names" || true)")" \
-            "$(filters "$(grep -vx opencode <<< "$names" || true)")" \
-            "$(flag "$(grep -x opencode <<< "$names" || true)")"
-
-  typecheck-group:
-    name: typecheck (${{ matrix.group }})
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.changes.outputs.typecheck_matrix) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/fork-setup-bun
-      # Filters come from PR-controlled package names, so they go through env
-      # and word splitting instead of being interpolated into the script.
-      - name: Typecheck
-        if: matrix.filters != ''
-        env:
-          FILTERS: ${{ matrix.filters }}
-        run: bun turbo typecheck $FILTERS
-      - name: Check generated client
-        if: matrix.group == 'rest'
-        working-directory: packages/client
-        run: bun run check:generated
-
-  unit:
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.unit == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/fork-setup-bun
-      - name: Configure git identity
-        run: |
-          git config --global user.email "bot@example.com"
-          git config --global user.name "fork-ci"
-      - name: Unit tests (affected packages except opencode)
-        env:
-          FILTERS: ${{ needs.changes.outputs.unit_filters }}
-        run: GITHUB_ACTIONS=false bun turbo test $FILTERS
-
-  opencode:
-    name: opencode (${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.opencode == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/fork-setup-bun
-      - name: Configure git identity
-        run: |
-          git config --global user.email "bot@example.com"
-          git config --global user.name "fork-ci"
-      - name: Unit tests (packages/opencode shard)
-        run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
-
-  # Branch protection requires checks named `typecheck` and `test`; these jobs
-  # report the combined result of the jobs above under those names.
-  typecheck:
-    needs: [changes, typecheck-group]
-    if: always() && github.event_name != 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check typecheck results
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-
-  test:
-    needs: [changes, unit, opencode]
-    if: always() && github.event_name != 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check test results
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-```
+The workflow does not run Windows unit tests, E2E tests, the compiled-service smoke test or the generated-documentation check that upstream's `test.yml` runs. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
 
 If upstream tests fail for reasons unrelated to our changes (flaky or environment-dependent tests), **do not disable them wholesale**. Record the specific test in section 8 and exclude it explicitly.
 
-### 4.4 `.github/workflows/fork-resolve.yml` (optional, maximum automation)
+### 4.3 `fork-resolve.yml` (optional, maximum automation)
 
 When a `fork-sync-conflict` issue is opened, this workflow has an opencode agent try to resolve the conflict in CI. **It never auto-merges**: it opens a PR labeled `needs-review` for a human to check. Resolution runs in a read-only job; a separate clean job publishes the resolved merge from a Git bundle. The agent still needs a provider credential, so use a dedicated key with a low spend limit and keep this workflow disabled unless you accept that the agent process can access that key.
 
@@ -686,199 +288,9 @@ To enable it:
 - `gh variable set FORK_AGENT_MODEL --body "<provider/model>"`
 - Add the provider's API key as a secret, for example `gh secret set ANTHROPIC_API_KEY`.
 
-```yaml
-name: fork-resolve
+### 4.4 `fork-setup-bun/action.yml`
 
-on:
-  issues:
-    types: [opened]
-  workflow_dispatch:
-
-concurrency:
-  group: fork-resolve
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-
-jobs:
-  resolve:
-    if: >
-      vars.FORK_AGENT_RESOLVE == 'true' &&
-      (github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'fork-sync-conflict'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      # Full clone on purpose: the agent inspects history (git log -p, -S),
-      # which would fetch blobs one by one in a partial clone.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: custom
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Start conflicted merge
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/anomalyco/opencode.git
-          git fetch --no-tags upstream "+refs/heads/dev:refs/remotes/upstream/dev"
-          git checkout -B sync-upstream-agent
-          git merge --no-ff --no-commit upstream/dev || true
-
-      - uses: ./.github/actions/fork-setup-bun
-        continue-on-error: true # bun install can fail while package.json or bun.lock are conflicted
-
-      - name: Install opencode
-        run: npm i -g opencode-ai@latest
-
-      - name: Resolve with agent
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          opencode run --auto -m "${{ vars.FORK_AGENT_MODEL }}" \
-            "A merge of upstream/dev is in progress with conflicts. Read FORK.md and follow section 6 EXACTLY to resolve them. Do not commit or push; leave the tree resolved with every file staged via git add."
-
-      - name: Verify and bundle merge
-        run: |
-          if git diff --name-only --diff-filter=U | grep -q .; then echo "unresolved conflicts remain"; exit 1; fi
-          if git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then echo "conflict markers remain"; exit 1; fi
-          git commit --no-edit -m "chore(fork): merge upstream $(git rev-parse --short upstream/dev) (agent-resolved)"
-          git bundle create "$RUNNER_TEMP/sync-upstream-agent.bundle" sync-upstream-agent ^origin/custom
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sync-upstream-agent
-          path: ${{ runner.temp }}/sync-upstream-agent.bundle
-          if-no-files-found: error
-          retention-days: 1
-
-  publish:
-    needs: resolve
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: custom
-          fetch-depth: 0
-          filter: blob:none
-          persist-credentials: false
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sync-upstream-agent
-          path: ${{ runner.temp }}
-
-      - name: Load and verify resolved merge
-        run: |
-          git bundle verify "$RUNNER_TEMP/sync-upstream-agent.bundle"
-          git fetch "$RUNNER_TEMP/sync-upstream-agent.bundle" sync-upstream-agent:refs/heads/sync-upstream-agent
-          git merge-base --is-ancestor origin/custom sync-upstream-agent || { echo "custom advanced during conflict resolution; rerun the sync" >&2; exit 1; }
-
-      - name: Push and open review PR
-        env:
-          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
-        run: |
-          gh auth setup-git
-          git push --force origin sync-upstream-agent
-          if ! gh pr view sync-upstream-agent --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
-            gh pr create --base custom --head sync-upstream-agent \
-              --title "chore(fork): sync upstream (agent-resolved)" \
-              --label needs-review \
-              --body "Conflicts resolved automatically per FORK.md Â§6. **Review before merging.** Integrate with a merge commit, never squash."
-          fi
-```
-
-### 4.5 Pointer in `AGENTS.md`
-
-Add this line **as the first line** of `AGENTS.md`. It is the only change to an upstream file that the infrastructure needs, and it is recorded in the ledger (section 7).
-
-```markdown
-> This repository is a fork. Read `FORK.md` first; it overrides branch, remote, sync and CI rules below.
-```
-
-### 4.6 `.github/actions/fork-setup-bun/action.yml`
-
-Fork workflows use this action instead of upstream's `.github/actions/setup-bun`, which we do not edit. It installs the same Bun version, but caches the installed `node_modules` trees keyed by `bun.lock`, `patches/**` and the workspace `package.json` files. An exact hit skips `bun install`; a partial hit runs it to complete the tree. With `install: "false"` it only puts Bun on `PATH`. It saves the cache only outside pull requests: `fork-sync` saves it for each merged lockfile, and `fork-ci` does so on pushes to `custom` that change those inputs.
-
-```yaml
-name: "Fork setup Bun"
-description: "Install Bun and the workspace dependencies, caching node_modules by lockfile"
-inputs:
-  install:
-    description: "Install workspace dependencies. Set to 'false' to only put Bun on PATH."
-    required: false
-    default: "true"
-runs:
-  using: "composite"
-  steps:
-    # Native install scripts run node-gyp, which requires Node >= 22.
-    - name: Setup Node
-      if: inputs.install == 'true'
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-      with:
-        node-version: "24"
-        package-manager-cache: false
-
-    # Same as the upstream setup-bun action: x64 runners use the baseline build,
-    # which does not require AVX2.
-    - name: Resolve Bun download URL
-      id: bun-url
-      shell: bash
-      run: |
-        if [ "$RUNNER_ARCH" = "X64" ] && [ "$RUNNER_OS" = "Linux" ]; then
-          V=$(sed -n 's/.*"packageManager": *"bun@\([^"]*\)".*/\1/p' package.json)
-          echo "url=https://github.com/oven-sh/bun/releases/download/bun-v${V}/bun-linux-x64-baseline.zip" >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      with:
-        bun-version-file: ${{ !steps.bun-url.outputs.url && 'package.json' || '' }}
-        bun-download-url: ${{ steps.bun-url.outputs.url }}
-
-    # Caching the installed tree instead of Bun's global download cache lets an
-    # exact hit skip `bun install`. A partial hit from restore-keys is completed
-    # by `bun install` below.
-    - name: Restore node_modules
-      id: cache
-      if: inputs.install == 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          node_modules
-          packages/*/node_modules
-          packages/*/*/node_modules
-        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**', 'package.json', 'packages/*/package.json', 'packages/*/*/package.json') }}
-        restore-keys: |
-          ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-
-
-    - name: Install setuptools for distutils compatibility
-      if: inputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: python3 -m pip install setuptools || pip install setuptools || true
-
-    # An exact hit already holds the result of this lockfile's install, including
-    # the root postinstall (which only touches node_modules), so skip the ~6 s
-    # verification pass.
-    - name: Install dependencies
-      if: inputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: bun install
-
-    # Pull request caches are scoped to the PR, so only runs on `custom`
-    # (fork-sync, and fork-ci on lockfile pushes) save a cache other PRs can use.
-    - name: Save node_modules
-      if: inputs.install == 'true' && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          node_modules
-          packages/*/node_modules
-          packages/*/*/node_modules
-        key: ${{ steps.cache.outputs.cache-primary-key }}
-```
+Fork workflows use this action instead of upstream's `.github/actions/setup-bun`, which we do not edit. It installs the same Bun version, but caches the installed `node_modules` trees (`packages/*`, `packages/*/*` and `services/*` workspaces) keyed by `bun.lock`, `patches/**` and the workspace `package.json` files. An exact hit skips `bun install`; a partial hit runs it to complete the tree. With `install: "false"` it only puts Bun on `PATH`. It saves the cache only outside pull requests: `fork-sync` saves it for each merged lockfile, and `fork-ci` does so on pushes to `custom` that change those inputs.
 
 ---
 
@@ -889,18 +301,20 @@ runs:
 Use **the first option that solves the problem**. The further down the list, the higher the maintenance cost.
 
 1. **User configuration** (`~/.config/opencode/`, global `opencode.jsonc`): does not touch the repo.
-2. **Project extension points** in new files: plugins (`.opencode/plugins/`), agents (`.opencode/agent/`), commands (`.opencode/command/`), tools (`.opencode/tool/`), skills (`.opencode/skills/`), themes (`.opencode/themes/`) and MCP servers. **Create new files with a `fork-` prefix** and do not edit the existing ones.
-3. **Published or local plugin** using the `@opencode-ai/plugin` API (`auth`, `tool`, `event` hooks…): the behavior lives outside the core.
-4. **New file inside a package** that the core imports from **a single point** (one line in a registry, such as `internalPlugins()` in `packages/opencode/src/plugin/index.ts`): any possible conflict shrinks to that one line.
+2. **Project extension points** in new files: plugins, agents, commands, tools, skills, themes and MCP servers under `.opencode/`. **Create new files with a `fork-` prefix** and do not edit the existing ones.
+3. **Published or local plugin** using the `@opencode/plugin` API (integration methods, `session.hook(...)` for `context`, `model.request`, `http.request`, `retry` and others): the behavior lives outside the core.
+4. **New `fork-` file inside a package** that the core imports from **a single point**, such as the `ProviderPlugins` list in `packages/core/src/plugin/provider.ts`: any possible conflict shrinks to that one line. The Claude Pro/Max login (F-002) is built this way.
 5. **Modifying existing upstream code**: last resort. It must be recorded in the ledger (section 7).
+
+Plugin hooks run in registration order, and config and user plugins register after the internal ones. A fork plugin that must see the final request (for example the final system prompt) should work in `http.request` on the wire request rather than in `context`.
 
 ### 5.2 If upstream code must change
 
 - **Keep changes minimal and local.** Do not reformat, rename, reorder imports or make drive-by "improvements" to code you don't own.
 - **Add rather than modify:** a new `if` branch, a new array entry or a new file is better than rewriting a function.
 - Mark the block with a `// fork: <short reason>` comment so it stands out in conflicts.
-- **Avoid files that change a lot upstream.** To check: `git log --since="30 days ago" --oneline upstream/dev -- <file> | wc -l`. If it returns more than 10, look for a different hook point.
-- **Do not edit** generated files (`packages/client/src/generated*`, `packages/sdk/js/src/gen/**`, `*.gen.ts`). Regenerate them instead (see `AGENTS.md`).
+- **Avoid files that change a lot upstream.** To check: `git log --since="30 days ago" --oneline upstream/v2 -- <file> | wc -l`. If it returns more than 10, look for a different hook point.
+- **Do not edit** generated files (`packages/client/src/promise/generated`, `packages/client/src/effect/generated`, `packages/client/src/effect/api`, `*.gen.ts`). Regenerate them instead (see `AGENTS.md`).
 - **Avoid** changing migrations or the database schema, and **avoid** adding dependencies to upstream `package.json` files. These are the most expensive conflicts (`bun.lock`). If there is no alternative, record it in the ledger.
 - If the change would help anyone, **propose it upstream** (section 9). Once accepted, the fork's diff shrinks.
 
@@ -908,7 +322,7 @@ Use **the first option that solves the problem**. The further down the list, the
 
 ```bash
 git fetch origin
-git fetch upstream
+git fetch upstream --tags
 git checkout -b <short-branch> origin/custom
 # ... changes ...
 cd packages/<package> && bun typecheck          # never tsc, never from the root
@@ -928,6 +342,7 @@ gh pr create --base custom --fill
 - Force-push `custom`.
 - Rebase `custom`, or integrate a sync PR with squash or rebase.
 - Commit directly to `custom` (always go through a PR).
+- Merge upstream's `v2` or `dev` branch tip into `custom`; only release tags are merged.
 - Re-enable upstream workflows, or edit `.github/workflows/*.yml` files that do not start with `fork-`.
 - Delete or disable upstream tests to make CI pass.
 - Resolve a conflict by dropping a fork change recorded in section 7 without saying so in the PR.
@@ -942,44 +357,45 @@ Use this when a `fork-sync-conflict` issue exists, when CI fails on a `fork-sync
 
 ```bash
 git fetch origin
-git fetch upstream
+git fetch upstream --tags
+tag=$(git tag -l 'v2.*' | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -1)   # the release named in the issue
 git checkout -B sync-upstream origin/custom
-git merge --no-ff upstream/dev        # rerere reapplies known resolutions automatically
+git merge --no-ff "$tag" -m "chore(fork): merge upstream $tag"   # rerere reapplies known resolutions
 git diff --name-only --diff-filter=U  # remaining conflicts
 ```
 
 ### 6.2 Resolve each file by type
 
-| File type | Action |
-| --- | --- |
-| Generated (`packages/client/src/generated*`, `packages/sdk/js/src/gen/**`, `*.gen.ts`, migration snapshots) | `git checkout --theirs -- <file>`, then regenerate (6.3) |
-| `bun.lock` | `git checkout --theirs -- bun.lock`, then `bun install` (reapplies our dependencies, if any) and `git add bun.lock` |
-| `package.json` | Union: upstream versions plus our entries recorded in section 7 |
-| `.github/workflows/*` that are not `fork-*` | `git checkout --theirs -- <file>` (they are disabled; their content doesn't matter) |
-| File **recorded in section 7** | Start from the upstream version (`--theirs`) and **reapply the intent** described in the ledger, adapted to the new API. Don't try to keep the old code if upstream refactored it |
-| File **not recorded** in section 7 | We had no intentional change there: `git checkout --theirs -- <file>` |
-| `AGENTS.md` | Upstream version plus the pointer line from 4.5 as the first line |
-| `FORK.md`, `CLAUDE.md`, `fork-*` | Should never conflict. If they do, keep ours (`--ours`) |
+| File type                                                                                                                                                      | Action                                                                                                                                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Generated (`packages/client/src/promise/generated`, `packages/client/src/effect/generated`, `packages/client/src/effect/api`, `*.gen.ts`, migration snapshots) | `git checkout --theirs -- <file>`, then regenerate (6.3)                                                                                                                          |
+| `bun.lock`                                                                                                                                                     | `git checkout --theirs -- bun.lock`, then `bun install` (reapplies our dependencies, if any) and `git add bun.lock`                                                               |
+| `package.json`                                                                                                                                                 | Union: upstream versions plus our entries recorded in section 7                                                                                                                   |
+| `.github/workflows/*` that are not `fork-*`                                                                                                                    | `git checkout --theirs -- <file>` (they are disabled; their content doesn't matter)                                                                                               |
+| File **recorded in section 7**                                                                                                                                 | Start from the upstream version (`--theirs`) and **reapply the intent** described in the ledger, adapted to the new API. Don't try to keep the old code if upstream refactored it |
+| File **not recorded** in section 7                                                                                                                             | We had no intentional change there: `git checkout --theirs -- <file>`                                                                                                             |
+| `AGENTS.md`                                                                                                                                                    | Upstream version plus the pointer line as the first line (F-001)                                                                                                                  |
+| `FORK.md`, `CLAUDE.md`, `fork-*`                                                                                                                               | Should never conflict. If they do, keep ours (`--ours`)                                                                                                                           |
 
 Notes:
 
 - During a merge into `custom`, `--ours` is the fork and `--theirs` is upstream.
 - If upstream **implemented on its own** something the fork carried as a patch, adopt the upstream version and **remove the entry** from the ledger.
-- If upstream **deleted** a file we modified (modify/delete conflict), find where the logic moved (`git log --follow --diff-filter=R upstream/dev -- <path>`, or `grep` for the symbols) and reapply the intent there.
+- If upstream **deleted** a file we modified (modify/delete conflict), find where the logic moved (`git log --follow --diff-filter=R "$tag" -- <path>`, or `grep` for the symbols) and reapply the intent there.
+- A fork-only file can also break without a textual conflict when upstream changes an API it uses. `fork-ci` catches that as a typecheck or test failure on the sync PR; fix it on `sync-upstream` like any other failure.
 
 ### 6.3 Regenerate and verify
 
 ```bash
 bun install
 (cd packages/client && bun run generate)
-./packages/sdk/js/script/build.ts          # only if the legacy SDK changed
 git add -A
 
 # Required checks before committing
 git diff --name-only --diff-filter=U        # must be empty
 git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'   # must be empty
-(cd packages/opencode && bun typecheck)     # plus every package touched by the ledger
-(cd packages/opencode && bun test <tests related to ledger files>)
+(cd packages/core && bun typecheck)         # plus every package touched by the ledger
+(cd packages/core && bun test test/plugin/fork-anthropic-oauth.test.ts)
 ```
 
 ### 6.4 Finish
@@ -988,7 +404,7 @@ git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'   # must be empty
 git commit --no-edit        # keeps the merge message
 git push --force origin sync-upstream
 gh pr create --base custom --head sync-upstream --title "chore(fork): sync upstream" --label fork-sync \
-  --body "Resolves #<issue>. Conflicts: <list>. Ledger changes: <if any>."
+  --body "Resolves #<issue>. Upstream <tag>. Conflicts: <list>. Ledger changes: <if any>."
 gh pr merge sync-upstream --auto --merge
 ```
 
@@ -1001,28 +417,34 @@ gh pr merge sync-upstream --auto --merge
 ## 7. Ledger of fork changes to upstream code
 
 > Every change to a file that exists upstream **must** be listed here. This is the source of truth for resolving conflicts: it describes the **intent**, not the lines.
-> Fork-only files (`fork-` prefix, `.opencode/**/fork-*`, `FORK.md`, `CLAUDE.md`) do not need entries.
+> Fork-only files (`fork-` prefix, `.opencode/**/fork-*`, `FORK.md`, `CLAUDE.md`) do not need entries, but the behavior they carry is described here when an upstream file registers them.
 
-| ID | Upstream file(s) | Intent (what must stay true) | Reason | Propose upstream? |
-| --- | --- | --- | --- | --- |
-| F-001 | `AGENTS.md` (line 1) | Agents know this is a fork and read `FORK.md` first | Fork infrastructure | No |
-| F-002 | `packages/opencode/src/plugin/index.ts` (import + one `internalPlugins()` entry) | `AnthropicAuthPlugin` from the fork-only `src/plugin/anthropic.ts` is registered as an internal plugin, so `anthropic` offers "Claude Pro/Max" OAuth next to the API key | Claude Pro/Max login | No (upstream removed it on purpose) |
-| F-003 | `packages/opencode/src/session/llm/request.ts` (`prepare`) | With `anthropic` + OAuth auth only: the system field is exactly `CLAUDE_CODE_SYSTEM`, opencode's system prompt goes as the first user message, and the `todowrite` tool key is sent as `TodoWrite`. API-key auth and every other provider are untouched | Anthropic rejects consumer OAuth requests otherwise (429 / 400) | No |
-| F-004 | `packages/opencode/src/cli/cmd/providers.ts`, `packages/tui/src/component/dialog-provider.tsx` | The provider pickers describe `anthropic` as "Claude Pro/Max or API key" | Discoverability of F-002 | No |
-| F-005 | `packages/web/src/content/docs/providers.mdx` (Anthropic section) | Docs list the Claude Pro/Max method and warn that it is unsupported by Anthropic's terms | Docs for F-002 | No |
-| F-006 | `packages/opencode/src/session/retry.ts` | Treat explicit Anthropic subscription-window exhaustion as terminal instead of sleeping for a multi-hour Retry-After | Keep OAuth sessions responsive at quota limits | No |
-| F-007 | `packages/tui/src/routes/session/index.tsx` (`toolDisplay`) | Render the Anthropic OAuth wire aliases for `todowrite` using the normal todo display | Keep tool results readable | No |
-| F-008 | `packages/core/src/plugin/provider/anthropic.ts` (one registration), `packages/core/src/session/runner/model.ts`, `packages/core/src/session/runner/llm.ts`, `packages/core/src/session/compaction.ts` | Register Claude Pro/Max login and refresh in V2; send its subscription requests and compaction turns with bearer auth and Claude Code identity while leaving API keys unchanged | Enable Anthropic OAuth on the V2 Session runner | No |
-| F-009 | `packages/core/src/integration.ts` (`connection.resolve`) | Serialize OAuth token refresh per credential across Location instances and re-read credentials inside the lock | Rotating refresh tokens cannot be replayed by concurrent V2 sessions in one process | Yes |
-| F-010 | `packages/opencode/test/cli/tui/editor-context.test.tsx` (`afterEach`) | The file restores its `process.cwd` and `os.homedir` spies after each test | The leaked `process.cwd` spy broke `httpapi-instance-context.test.ts` when both files landed in the same `fork-ci` shard | Yes |
+| ID    | Upstream file(s)                                                                    | Intent (what must stay true)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Reason                                                                                                                                 | Propose upstream?                   |
+| ----- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| F-001 | `AGENTS.md` (line 1)                                                                | Agents know this is a fork and read `FORK.md` first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Fork infrastructure                                                                                                                    | No                                  |
+| F-002 | `packages/core/src/plugin/provider.ts` (one import and one `ProviderPlugins` entry) | `ForkAnthropicOAuthPlugin` from the fork-only `fork-anthropic-oauth.ts` is registered. It (1) adds a "Claude Pro/Max" OAuth method with refresh to the `anthropic` integration, keeping method ID `claude-pro-max`; (2) with that credential active, rewrites every Anthropic HTTP request so the system field is exactly the Claude Code identity, opencode's system prompt becomes the first user turn, and the Claude Code headers are sent (`anthropic-beta` appended to existing betas, `User-Agent`, `x-app`); (3) stops retries on subscription-window exhaustion; (4) makes concurrent refreshes of one rotating refresh token share a single token request. API-key auth and other providers are untouched. Upstream already sends OAuth credentials to Anthropic as a bearer token | Claude Pro/Max login; Anthropic rejects consumer OAuth requests that do not look like Claude Code, and rejects replayed refresh tokens | No (upstream removed it on purpose) |
 
 To check that the ledger is complete, list the upstream files the fork modifies (fork-only files excluded):
 
 ```bash
-git diff --name-only upstream/dev...custom
+tag=$(git tag -l 'v2.*' | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+git diff --name-only "$tag"...custom
 ```
 
 This includes modified, added and deleted paths. Every upstream file in that list must appear in the table.
+
+### Retired entries
+
+Entries from the V1 era, kept so their IDs are not reused:
+
+| ID                 | What it was                                                                                       | Why it is gone                                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-002 (V1) … F-005 | Claude Pro/Max login in `packages/opencode`, provider picker hints and `providers.mdx` docs       | `packages/opencode` does not exist in V2. The V2 pickers list integration methods by label, and the fork does not publish the docs site. The login lives in the new F-002 |
+| F-006              | Terminal subscription-window exhaustion in `packages/opencode/src/session/retry.ts`               | Moved into the F-002 plugin as a `retry` hook. Upstream V2 also classifies "usage limit" 429s as quota errors and caps Retry-After at 15 minutes                          |
+| F-007              | TUI display for the `TodoWrite` wire alias                                                        | V2 has no `todowrite` tool                                                                                                                                                |
+| F-008              | Anthropic OAuth in the V2 runner (`model.ts`, `llm.ts`, `compaction.ts`, provider `anthropic.ts`) | Upstream's runner was rewritten and now sends OAuth as a bearer token. The rest is done by the F-002 plugin through hooks, with no edits to upstream files                |
+| F-009              | Refresh lock in `packages/core/src/integration.ts`                                                | Replaced by refresh sharing inside the F-002 plugin                                                                                                                       |
+| F-010              | Spy cleanup in `packages/opencode/test/cli/tui/editor-context.test.tsx`                           | File does not exist in V2                                                                                                                                                 |
 
 ---
 
@@ -1031,8 +453,8 @@ This includes modified, added and deleted paths. Every upstream file in that lis
 Upstream tests or checks that fail in `fork-ci` because of the environment, not because of our changes. Review them from time to time in case upstream has fixed them.
 
 | Test / check | Reason | Since |
-| --- | --- | --- |
-| `packages/opencode/test/cli/run/run-process.test.ts`: `exits nonzero promptly when the model is unknown`, `--format json records an unknown stream finish and continuation`, and `unknown stream finish preserves partial output and continues` | On GitHub-hosted Ubuntu, the child processes exceeded the tests' 15- or 30-second deadlines during the full suite. `fork-ci.yml` excludes only these three cases; the rest of the package tests still run. | 2026-09-23 |
+| ------------ | ------ | ----- |
+| _(none)_     |        |       |
 
 ---
 
@@ -1042,14 +464,14 @@ Best for generic improvements: every change upstream accepts is one less to main
 
 ```bash
 git fetch upstream
-git checkout -b <short-branch> upstream/dev        # from upstream, NOT from custom
+git checkout -b <short-branch> upstream/v2         # from upstream, NOT from custom
 git cherry-pick <commits>                          # or redo the change cleanly
-# Option A: git push origin <short-branch> && gh pr create --repo anomalyco/opencode --base dev
+# Option A: git push origin <short-branch> && gh pr create --repo anomalyco/opencode --base v2
 # Option B: push to a separate public fork
 ```
 
 - Follow `AGENTS.md` to the letter: conventional commits and the project's style.
-- Once upstream accepts it, the next sync brings it in. At that point **remove the entry** from section 7 and, if it conflicts, keep the upstream version.
+- Once upstream accepts it and it ships in a release, the next sync brings it in. At that point **remove the entry** from section 7 and, if it conflicts, keep the upstream version.
 
 ---
 
@@ -1057,25 +479,26 @@ git cherry-pick <commits>                          # or redo the change cleanly
 
 ```bash
 bun install
-bun run dev                                            # development, from the root
-cd packages/opencode && bun run build --single         # binary for the current platform only → packages/opencode/dist/<platform>/bin/opencode
+bun run dev                                            # development, from the root (runs packages/cli)
+cd packages/cli && bun run build --single              # binary for the current platform only → packages/cli/dist/<platform>/bin/
 ```
 
-To avoid clashing with an official install, run the fork binary under an alias (for example `opencode-fork`) instead of replacing the official one.
+To avoid clashing with an official install, run the fork binary under an alias (for example `opencodenil`) instead of replacing the official one. The fork build shares configuration, logins and the database with the official `opencode`.
 
 ---
 
 ## 11. Quick troubleshooting
 
-| Symptom | Likely cause | Fix |
-| --- | --- | --- |
-| `fork-sync` fails at checkout or push with 401/403 | `FORK_SYNC_TOKEN` expired or missing permissions | Regenerate the token (2.4) |
-| `refusing to allow ... workflow ... without workflows permission` | Token lacks the *Workflows* permission | Add *Workflows: write* |
-| The `fork-sync` PR doesn't run `fork-ci` | PR was created with `GITHUB_TOKEN` | Use `FORK_SYNC_TOKEN` for `gh` |
-| Jobs stuck in the queue waiting for a `blacksmith-*` runner | An upstream workflow is active | Run the command from 2.6 |
-| The same conflicts come back on every sync | A sync PR was squashed or rebased | Merge `upstream/dev` into `custom` again with a merge commit; never squash |
-| Auto-merge doesn't turn on | Auto-merge disabled or no required checks | Section 2.5 |
-| `check:generated` fails | The client was not regenerated after the merge | `cd packages/client && bun run generate` |
-| The `pre-push` hook fails on the Bun version | Local Bun differs from `packageManager` | Install the version in `package.json` → `packageManager` |
-| On Windows, `pre-push` fails with `TS1128` in `custom-elements.d.ts` | Symlinks were checked out as text files | Section 2.3: Developer Mode plus `core.symlinks true` |
-| A green sync PR does not auto-merge | `custom` advanced and the PR is out of date | The next hourly `fork-sync` merges `custom` into it; or run it by hand |
+| Symptom                                                           | Likely cause                                                 | Fix                                                                          |
+| ----------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `fork-sync` fails at checkout or push with 401/403                | `FORK_SYNC_TOKEN` expired or missing permissions             | Regenerate the token (2.4)                                                   |
+| `refusing to allow ... workflow ... without workflows permission` | Token lacks the _Workflows_ permission                       | Add _Workflows: write_                                                       |
+| `fork-sync` fails with "no upstream release tag matches"          | Upstream changed its tag scheme or moved to a new major line | Update `UPSTREAM_TAG_PATTERN` in `fork-sync.yml` and `fork-resolve.yml`      |
+| The `fork-sync` PR doesn't run `fork-ci`                          | PR was created with `GITHUB_TOKEN`                           | Use `FORK_SYNC_TOKEN` for `gh`                                               |
+| Jobs stuck in the queue waiting for a `blacksmith-*` runner       | An upstream workflow is active                               | Run the command from 2.6                                                     |
+| The same conflicts come back on every sync                        | A sync PR was squashed or rebased                            | Merge the upstream tag into `custom` again with a merge commit; never squash |
+| Auto-merge doesn't turn on                                        | Auto-merge disabled or no required checks                    | Section 2.5                                                                  |
+| `check:generated` fails                                           | The client was not regenerated after the merge               | `cd packages/client && bun run generate`                                     |
+| The `pre-push` hook fails on the Bun version                      | Local Bun differs from `packageManager`                      | Install the version in `package.json` → `packageManager`                     |
+| A green sync PR does not auto-merge                               | `custom` advanced and the PR is out of date                  | The next hourly `fork-sync` merges `custom` into it; or run it by hand       |
+| Claude Pro/Max requests fail with 401/429 after moving from V1    | The V1 login was imported without refresh                    | Log in again and pick "Claude Pro/Max" (section 1)                           |

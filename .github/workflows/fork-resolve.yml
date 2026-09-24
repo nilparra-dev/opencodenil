@@ -33,9 +33,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/anomalyco/opencode.git
-          git fetch --no-tags upstream "+refs/heads/dev:refs/remotes/upstream/dev"
+          # Same release selection as fork-sync: the newest stable v2 tag.
+          tag=$(git ls-remote --tags --refs upstream 'v*' | sed 's#.*refs/tags/##' | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          git fetch --no-tags upstream "+refs/tags/$tag:refs/tags/$tag"
+          echo "UPSTREAM_TAG=$tag" >> "$GITHUB_ENV"
           git checkout -B sync-upstream-agent
-          git merge --no-ff --no-commit upstream/dev || true
+          git merge --no-ff --no-commit "$tag" || true
 
       - uses: ./.github/actions/fork-setup-bun
         continue-on-error: true # bun install can fail while package.json or bun.lock are conflicted
@@ -48,13 +51,13 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           opencode run --auto -m "${{ vars.FORK_AGENT_MODEL }}" \
-            "A merge of upstream/dev is in progress with conflicts. Read FORK.md and follow section 6 EXACTLY to resolve them. Do not commit or push; leave the tree resolved with every file staged via git add."
+            "A merge of upstream release $UPSTREAM_TAG is in progress with conflicts. Read FORK.md and follow section 6 EXACTLY to resolve them. Do not commit or push; leave the tree resolved with every file staged via git add."
 
       - name: Verify and bundle merge
         run: |
           if git diff --name-only --diff-filter=U | grep -q .; then echo "unresolved conflicts remain"; exit 1; fi
           if git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then echo "conflict markers remain"; exit 1; fi
-          git commit --no-edit -m "chore(fork): merge upstream $(git rev-parse --short upstream/dev) (agent-resolved)"
+          git commit --no-edit -m "chore(fork): merge upstream $UPSTREAM_TAG (agent-resolved)"
           git bundle create "$RUNNER_TEMP/sync-upstream-agent.bundle" sync-upstream-agent ^origin/custom
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

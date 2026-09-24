@@ -1,13 +1,15 @@
-export * as Connection from "./connection"
+export * as Connection from "./connection.js"
 
 import { Schema } from "effect"
-import { Credential } from "./credential"
+import { Credential } from "./credential.js"
 
 export interface CredentialInfo extends Schema.Schema.Type<typeof CredentialInfo> {}
 export const CredentialInfo = Schema.Struct({
   type: Schema.Literal("credential"),
   id: Credential.ID,
   label: Schema.String,
+  /** How the credential was obtained: a stored key or an OAuth grant. */
+  method: Schema.Literals(["key", "oauth"]),
 }).annotate({ identifier: "Connection.CredentialInfo" })
 
 export interface EnvInfo extends Schema.Schema.Type<typeof EnvInfo> {}

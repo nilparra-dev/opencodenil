@@ -13,6 +13,7 @@ on:
       - package.json
       - packages/*/package.json
       - packages/*/*/package.json
+      - services/*/package.json
       - .github/actions/fork-setup-bun/**
   workflow_dispatch:
 
@@ -49,7 +50,7 @@ jobs:
       typecheck_matrix: ${{ steps.affected.outputs.typecheck_matrix }}
       unit: ${{ steps.affected.outputs.unit }}
       unit_filters: ${{ steps.affected.outputs.unit_filters }}
-      opencode: ${{ steps.affected.outputs.opencode }}
+      core: ${{ steps.affected.outputs.core }}
     steps:
       # A pull_request checkout is GitHub's merge commit, so HEAD^1 is the base
       # it was merged onto and HEAD^1..HEAD is exactly the PR's change.
@@ -68,23 +69,23 @@ jobs:
           # take about half of the typecheck time; every other package,
           # including ones upstream adds later, falls into the "rest" group.
           HEAVY: |-
-            opencode
-            @opencode-ai/sdk-next
-            @opencode-ai/cli
-            @opencode-ai/server
+            @opencode/www
+            @opencode/cli
+            @opencode/posts
+            @opencode/sdk
         run: |
           filters() { if [ -n "$1" ]; then sed 's/^/--filter=/' <<< "$1" | paste -sd' '; fi; }
           flag() { if [ -n "$1" ]; then echo true; else echo false; fi; }
-          # write <heavy filters> <rest filters> <unit filters> <opencode flag>
+          # write <heavy filters> <rest filters> <unit filters> <core flag>
           write() {
             jq -nc --arg heavy "$1" --arg rest "$2" \
               '[if $heavy != "" then {group: "heavy", filters: $heavy} else empty end, {group: "rest", filters: $rest}]' |
               sed 's/^/typecheck_matrix=/' >> "$GITHUB_OUTPUT"
-            printf 'code=true\nunit=%s\nunit_filters=%s\nopencode=%s\n' "$(flag "$3")" "$3" "$4" >> "$GITHUB_OUTPUT"
+            printf 'code=true\nunit=%s\nunit_filters=%s\ncore=%s\n' "$(flag "$3")" "$3" "$4" >> "$GITHUB_OUTPUT"
           }
           everything() {
             echo "$1: running everything"
-            write "$(filters "$HEAVY")" "$(sed 's/^/--filter=!/' <<< "$HEAVY" | paste -sd' ')" "--filter=!./packages/opencode" true
+            write "$(filters "$HEAVY")" "$(sed 's/^/--filter=!/' <<< "$HEAVY" | paste -sd' ')" "--filter=!./packages/core" true
             exit 0
           }
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then everything "not a pull request"; fi
@@ -103,8 +104,8 @@ jobs:
           write \
             "$(filters "$(grep -xF "$HEAVY" <<< "$names" || true)")" \
             "$(filters "$(grep -vxF "$HEAVY" <<< "$names" || true)")" \
-            "$(filters "$(grep -vx opencode <<< "$names" || true)")" \
-            "$(flag "$(grep -x opencode <<< "$names" || true)")"
+            "$(filters "$(grep -vx @opencode/core <<< "$names" || true)")" \
+            "$(flag "$(grep -x @opencode/core <<< "$names" || true)")"
 
   typecheck-group:
     name: typecheck (${{ matrix.group }})
@@ -147,15 +148,15 @@ jobs:
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "fork-ci"
-      - name: Unit tests (affected packages except opencode)
+      - name: Unit tests (affected packages except core)
         env:
           FILTERS: ${{ needs.changes.outputs.unit_filters }}
         run: GITHUB_ACTIONS=false bun turbo test $FILTERS
 
-  opencode:
-    name: opencode (${{ matrix.shard }}/${{ strategy.job-total }})
+  core:
+    name: core (${{ matrix.shard }}/${{ strategy.job-total }})
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.opencode == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -171,8 +172,14 @@ jobs:
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "fork-ci"
-      - name: Unit tests (packages/opencode shard)
-        run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
+      # Search tests use the system rg; without it core downloads ripgrep,
+      # which the test preload blocks. Upstream's runners ship rg preinstalled.
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends ripgrep
+      - name: Unit tests (packages/core shard)
+        run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/core -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
   # Branch protection requires checks named `typecheck` and `test`; these jobs
   # report the combined result of the jobs above under those names.
@@ -187,7 +194,7 @@ jobs:
         run: exit 1
 
   test:
-    needs: [changes, unit, opencode]
+    needs: [changes, unit, core]
     if: always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5

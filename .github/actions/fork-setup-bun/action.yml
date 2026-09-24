@@ -45,7 +45,8 @@ runs:
           node_modules
           packages/*/node_modules
           packages/*/*/node_modules
-        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**', 'package.json', 'packages/*/package.json', 'packages/*/*/package.json') }}
+          services/*/node_modules
+        key: ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-${{ hashFiles('bun.lock', 'patches/**', 'package.json', 'packages/*/package.json', 'packages/*/*/package.json', 'services/*/package.json') }}
         restore-keys: |
           ${{ runner.os }}-${{ runner.arch }}-fork-node-modules-
 
@@ -72,4 +73,5 @@ runs:
           node_modules
           packages/*/node_modules
           packages/*/*/node_modules
+          services/*/node_modules
         key: ${{ steps.cache.outputs.cache-primary-key }}
