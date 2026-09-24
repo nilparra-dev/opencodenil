@@ -43,27 +43,25 @@ jobs:
 
       # Hourly runs are cheap because the no-op case is answered by the compare
       # API without cloning. Any API failure falls through to the full check.
-      # While a sync PR is open, new upstream commits are merged on top of it
-      # instead of rebuilding it from custom, so fixes pushed to the sync
-      # branch survive, and an up-to-date sync PR is left alone.
-      - name: Check upstream
+      # While a sync PR is open, the run builds on the sync branch instead of
+      # rebuilding it from custom, so fixes pushed there survive. It merges in
+      # whatever the branch lacks: new upstream commits, and new custom commits
+      # (branch protection requires PRs to be up to date with custom). A sync
+      # PR that already has both is left alone.
+      - name: Check for changes
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           compare() { gh api "repos/$GITHUB_REPOSITORY/compare/$1...$2?per_page=1" --jq .status || echo unknown; }
+          contains() { local s; s=$(compare "$1" "$2"); echo "compare $1...$2: $s" >&2; [ "$s" = identical ] || [ "$s" = behind ]; }
           upstream="${UPSTREAM_REPO/\//:}:$UPSTREAM_BRANCH"
-          base="$FORK_BRANCH"
           open=$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number --jq length || echo 0)
-          if [ "$open" != 0 ] && [ "$(compare "$FORK_BRANCH" "$SYNC_BRANCH")" = ahead ]; then
-            base="$SYNC_BRANCH"
-          fi
-          status=$(compare "$base" "$upstream")
-          echo "compare $base...$upstream: $status"
+          if [ "$open" != 0 ]; then base="$SYNC_BRANCH"; else base="$FORK_BRANCH"; fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
-          if [ "$status" = identical ] || [ "$status" = behind ]; then
+          if contains "$base" "$upstream" && contains "$base" "$FORK_BRANCH"; then
             echo "new=false" >> "$GITHUB_OUTPUT"
-            echo "$base already contains $UPSTREAM_REPO/$UPSTREAM_BRANCH"
+            echo "$base already contains $UPSTREAM_REPO/$UPSTREAM_BRANCH and $FORK_BRANCH"
           else
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
@@ -83,29 +81,37 @@ jobs:
         run: |
           git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
           git fetch --no-tags upstream "+refs/heads/$UPSTREAM_BRANCH:refs/remotes/upstream/$UPSTREAM_BRANCH"
-          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+          echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD && git merge-base --is-ancestor "origin/$FORK_BRANCH" HEAD; then
             echo "behind=false" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.check.outputs.base }} already contains upstream/$UPSTREAM_BRANCH"
+            echo "${{ steps.check.outputs.base }} already contains upstream/$UPSTREAM_BRANCH and $FORK_BRANCH"
           else
             echo "behind=true" >> "$GITHUB_OUTPUT"
-            echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Merge upstream
+      # Starting from custom, only the upstream merge happens. Starting from an
+      # open sync branch, custom is merged first when it has new commits.
+      - name: Merge
         id: merge
         if: steps.fetch.outputs.behind == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$SYNC_BRANCH"
-          if git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" \
-               -m "chore(fork): merge upstream ${{ steps.fetch.outputs.upstream_sha }}"; then
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
-            git merge --abort
-            echo "conflict=true" >> "$GITHUB_OUTPUT"
-          fi
+          for ref in "origin/$FORK_BRANCH" "upstream/$UPSTREAM_BRANCH"; do
+            if git merge-base --is-ancestor "$ref" HEAD; then continue; fi
+            if [ "$ref" = "origin/$FORK_BRANCH" ]; then msg="chore(fork): merge $FORK_BRANCH into $SYNC_BRANCH"; else msg="chore(fork): merge upstream $UPSTREAM_SHA"; fi
+            if ! git merge --no-ff --no-edit "$ref" -m "$msg"; then
+              echo "$ref" > "$RUNNER_TEMP/conflict-ref.txt"
+              git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+              git merge --abort
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
 
       # Runs on the default branch, so it also saves the node_modules cache for
       # the merged lockfile before fork-ci needs it on the sync PR.
@@ -141,7 +147,7 @@ jobs:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           {
-            echo "Syncing with \`upstream/$UPSTREAM_BRANCH\` (${{ steps.fetch.outputs.upstream_sha }}) has conflicts."
+            echo "Merging \`$(cat "$RUNNER_TEMP/conflict-ref.txt")\` into \`$SYNC_BRANCH\` (base \`${{ steps.check.outputs.base }}\`, upstream ${{ steps.fetch.outputs.upstream_sha }}) has conflicts."
             echo
             echo "Conflicted files:"
             echo

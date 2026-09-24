@@ -46,8 +46,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.affected.outputs.code }}
-      typecheck: ${{ steps.affected.outputs.typecheck }}
-      filters: ${{ steps.affected.outputs.filters }}
+      typecheck_matrix: ${{ steps.affected.outputs.typecheck_matrix }}
       unit: ${{ steps.affected.outputs.unit }}
       unit_filters: ${{ steps.affected.outputs.unit_filters }}
       opencode: ${{ steps.affected.outputs.opencode }}
@@ -65,14 +64,29 @@ jobs:
         id: affected
         env:
           TURBO_TELEMETRY_DISABLED: "1"
+          # Typecheck runs as two groups on separate runners. These packages
+          # take about half of the typecheck time; every other package,
+          # including ones upstream adds later, falls into the "rest" group.
+          HEAVY: |-
+            opencode
+            @opencode-ai/sdk-next
+            @opencode-ai/cli
+            @opencode-ai/server
         run: |
-          everything() {
-            echo "$1: running everything"
-            printf 'code=true\ntypecheck=true\nfilters=\nunit=true\nunit_filters=--filter=!./packages/opencode\nopencode=true\n' >> "$GITHUB_OUTPUT"
-            exit 0
-          }
           filters() { if [ -n "$1" ]; then sed 's/^/--filter=/' <<< "$1" | paste -sd' '; fi; }
           flag() { if [ -n "$1" ]; then echo true; else echo false; fi; }
+          # write <heavy filters> <rest filters> <unit filters> <opencode flag>
+          write() {
+            jq -nc --arg heavy "$1" --arg rest "$2" \
+              '[if $heavy != "" then {group: "heavy", filters: $heavy} else empty end, {group: "rest", filters: $rest}]' |
+              sed 's/^/typecheck_matrix=/' >> "$GITHUB_OUTPUT"
+            printf 'code=true\nunit=%s\nunit_filters=%s\nopencode=%s\n' "$(flag "$3")" "$3" "$4" >> "$GITHUB_OUTPUT"
+          }
+          everything() {
+            echo "$1: running everything"
+            write "$(filters "$HEAVY")" "$(sed 's/^/--filter=!/' <<< "$HEAVY" | paste -sd' ')" "--filter=!./packages/opencode" true
+            exit 0
+          }
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then everything "not a pull request"; fi
           code=$(git diff --name-only HEAD^1 HEAD | grep -vE '\.md$' || true)
           if [ -z "$code" ]; then
@@ -86,21 +100,22 @@ jobs:
             jq -r '.packages.items[].name') || everything "turbo ls failed"
           echo "affected packages:"
           echo "$names"
-          unit=$(grep -vx opencode <<< "$names" || true)
-          {
-            echo "code=true"
-            echo "typecheck=$(flag "$names")"
-            echo "filters=$(filters "$names")"
-            echo "unit=$(flag "$unit")"
-            echo "unit_filters=$(filters "$unit")"
-            echo "opencode=$(flag "$(grep -x opencode <<< "$names" || true)")"
-          } >> "$GITHUB_OUTPUT"
+          write \
+            "$(filters "$(grep -xF "$HEAVY" <<< "$names" || true)")" \
+            "$(filters "$(grep -vxF "$HEAVY" <<< "$names" || true)")" \
+            "$(filters "$(grep -vx opencode <<< "$names" || true)")" \
+            "$(flag "$(grep -x opencode <<< "$names" || true)")"
 
-  typecheck:
+  typecheck-group:
+    name: typecheck (${{ matrix.group }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.typecheck_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,11 +124,12 @@ jobs:
       # Filters come from PR-controlled package names, so they go through env
       # and word splitting instead of being interpolated into the script.
       - name: Typecheck
-        if: needs.changes.outputs.typecheck == 'true'
+        if: matrix.filters != ''
         env:
-          FILTERS: ${{ needs.changes.outputs.filters }}
+          FILTERS: ${{ matrix.filters }}
         run: bun turbo typecheck $FILTERS
       - name: Check generated client
+        if: matrix.group == 'rest'
         working-directory: packages/client
         run: bun run check:generated
 
@@ -158,8 +174,18 @@ jobs:
       - name: Unit tests (packages/opencode shard)
         run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
 
-  # Branch protection requires a check named `test`; this job reports the
-  # combined result of the test jobs above under that name.
+  # Branch protection requires checks named `typecheck` and `test`; these jobs
+  # report the combined result of the jobs above under those names.
+  typecheck:
+    needs: [changes, typecheck-group]
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check typecheck results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
   test:
     needs: [changes, unit, opencode]
     if: always() && github.event_name != 'push'

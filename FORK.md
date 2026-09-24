@@ -103,6 +103,8 @@ git config pull.ff only                   # never create implicit merges with a 
 git config fetch.prune true
 ```
 
+On Windows, the repository also contains symlinks (for example `packages/app/src/custom-elements.d.ts`). Enable Developer Mode (Settings → System → For developers) so git can create them, then run `git config core.symlinks true` and `git checkout -- .` on a clean tree. Without this, those files are checked out as text files holding the target path, and `bun typecheck` in the `pre-push` hook fails in `@opencode-ai/app` and `@opencode-ai/enterprise`.
+
 ### 2.4 👤 Token for the sync bot
 
 `GITHUB_TOKEN` **does not work** for this, for two reasons:
@@ -202,10 +204,10 @@ every hour / manual
       ▼
 fork-sync.yml ──► disables upstream workflows that are not fork-*
       │
-      ├─ is upstream/dev already contained in the base? ──► yes: stop (compare API, no clone)
+      ├─ does the base already contain upstream/dev and custom? ──► yes: stop (compare API, no clone)
       │     base = the open sync PR branch if there is one, otherwise custom
       ▼
- merge upstream/dev into sync-upstream (starting from the base)
+ merge what is missing (custom, then upstream/dev) into sync-upstream, starting from the base
       │
       ├─ no conflicts ──► regenerate client ──► push ──► PR (label fork-sync, auto-merge with merge commit)
       │                                                     │
@@ -223,7 +225,7 @@ fork-sync.yml ──► disables upstream workflows that are not fork-*
 
 - The schedule is hourly. Upstream lands about 250 commits a month, and syncing often keeps each merge small.
 - When upstream has not changed, the workflow answers from the GitHub compare API without cloning and finishes in seconds.
-- While a sync PR is open, new upstream commits are merged on top of `sync-upstream` instead of rebuilding it from `custom`, so fixes pushed to the sync branch (section 6) are kept. A sync PR that already contains upstream is left alone.
+- While a sync PR is open, the run builds on `sync-upstream` instead of rebuilding it from `custom`, so fixes pushed to the sync branch (section 6) are kept. It merges new `custom` commits into it (branch protection requires PRs to be up to date with `custom`, so otherwise auto-merge would stall) and then new upstream commits. A sync PR that already contains both is left alone.
 - An open `fork-sync-conflict` issue is kept current by editing its body, not by adding a comment on every run.
 - The sync PR is updated by pushing `sync-upstream`, which is a bot branch. `custom` is **never** force-pushed.
 - Checkouts that only need history (`fork-sync`, the `publish` jobs) are blobless (`filter: blob:none`); `fork-resolve` keeps a full clone because the agent reads history.
@@ -300,27 +302,25 @@ jobs:
 
       # Hourly runs are cheap because the no-op case is answered by the compare
       # API without cloning. Any API failure falls through to the full check.
-      # While a sync PR is open, new upstream commits are merged on top of it
-      # instead of rebuilding it from custom, so fixes pushed to the sync
-      # branch survive, and an up-to-date sync PR is left alone.
-      - name: Check upstream
+      # While a sync PR is open, the run builds on the sync branch instead of
+      # rebuilding it from custom, so fixes pushed there survive. It merges in
+      # whatever the branch lacks: new upstream commits, and new custom commits
+      # (branch protection requires PRs to be up to date with custom). A sync
+      # PR that already has both is left alone.
+      - name: Check for changes
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           compare() { gh api "repos/$GITHUB_REPOSITORY/compare/$1...$2?per_page=1" --jq .status || echo unknown; }
+          contains() { local s; s=$(compare "$1" "$2"); echo "compare $1...$2: $s" >&2; [ "$s" = identical ] || [ "$s" = behind ]; }
           upstream="${UPSTREAM_REPO/\//:}:$UPSTREAM_BRANCH"
-          base="$FORK_BRANCH"
           open=$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number --jq length || echo 0)
-          if [ "$open" != 0 ] && [ "$(compare "$FORK_BRANCH" "$SYNC_BRANCH")" = ahead ]; then
-            base="$SYNC_BRANCH"
-          fi
-          status=$(compare "$base" "$upstream")
-          echo "compare $base...$upstream: $status"
+          if [ "$open" != 0 ]; then base="$SYNC_BRANCH"; else base="$FORK_BRANCH"; fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
-          if [ "$status" = identical ] || [ "$status" = behind ]; then
+          if contains "$base" "$upstream" && contains "$base" "$FORK_BRANCH"; then
             echo "new=false" >> "$GITHUB_OUTPUT"
-            echo "$base already contains $UPSTREAM_REPO/$UPSTREAM_BRANCH"
+            echo "$base already contains $UPSTREAM_REPO/$UPSTREAM_BRANCH and $FORK_BRANCH"
           else
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
@@ -340,29 +340,37 @@ jobs:
         run: |
           git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
           git fetch --no-tags upstream "+refs/heads/$UPSTREAM_BRANCH:refs/remotes/upstream/$UPSTREAM_BRANCH"
-          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+          echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD && git merge-base --is-ancestor "origin/$FORK_BRANCH" HEAD; then
             echo "behind=false" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.check.outputs.base }} already contains upstream/$UPSTREAM_BRANCH"
+            echo "${{ steps.check.outputs.base }} already contains upstream/$UPSTREAM_BRANCH and $FORK_BRANCH"
           else
             echo "behind=true" >> "$GITHUB_OUTPUT"
-            echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Merge upstream
+      # Starting from custom, only the upstream merge happens. Starting from an
+      # open sync branch, custom is merged first when it has new commits.
+      - name: Merge
         id: merge
         if: steps.fetch.outputs.behind == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$SYNC_BRANCH"
-          if git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" \
-               -m "chore(fork): merge upstream ${{ steps.fetch.outputs.upstream_sha }}"; then
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
-            git merge --abort
-            echo "conflict=true" >> "$GITHUB_OUTPUT"
-          fi
+          for ref in "origin/$FORK_BRANCH" "upstream/$UPSTREAM_BRANCH"; do
+            if git merge-base --is-ancestor "$ref" HEAD; then continue; fi
+            if [ "$ref" = "origin/$FORK_BRANCH" ]; then msg="chore(fork): merge $FORK_BRANCH into $SYNC_BRANCH"; else msg="chore(fork): merge upstream $UPSTREAM_SHA"; fi
+            if ! git merge --no-ff --no-edit "$ref" -m "$msg"; then
+              echo "$ref" > "$RUNNER_TEMP/conflict-ref.txt"
+              git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+              git merge --abort
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
 
       # Runs on the default branch, so it also saves the node_modules cache for
       # the merged lockfile before fork-ci needs it on the sync PR.
@@ -398,7 +406,7 @@ jobs:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           {
-            echo "Syncing with \`upstream/$UPSTREAM_BRANCH\` (${{ steps.fetch.outputs.upstream_sha }}) has conflicts."
+            echo "Merging \`$(cat "$RUNNER_TEMP/conflict-ref.txt")\` into \`$SYNC_BRANCH\` (base \`${{ steps.check.outputs.base }}\`, upstream ${{ steps.fetch.outputs.upstream_sha }}) has conflicts."
             echo
             echo "Conflicted files:"
             echo
@@ -459,8 +467,8 @@ jobs:
 This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not a replacement for all upstream checks. It runs typecheck, Linux unit tests and the generated-client check, split across parallel jobs:
 
 - `changes` decides what the PR needs. A PR that only touches `*.md` files runs nothing. A PR that touches any other file outside `packages/` (lockfile, patches, workflows, root config; every sync PR) runs everything. Otherwise only the packages that `turbo ls --affected` reports run, which includes every package depending on a changed one. Skipped jobs count as passing for branch protection; if `changes` itself fails, `test` fails.
-- `typecheck` (affected packages plus the generated-client check), `unit` (affected packages except `opencode`) and eight `opencode (N/8)` shards (`bun test --shard`) run in parallel. `packages/opencode` holds almost all the test time, so it is the only package that is sharded. `bun test --shard` splits by file count, not by duration, so shards are uneven; more shards keep the slowest one short.
-- `test` aggregates the test jobs so branch protection can keep requiring the `typecheck` and `test` checks.
+- `typecheck (heavy)` (the slowest packages, listed in `HEAVY` in the `changes` job), `typecheck (rest)` (every other affected package, plus the generated-client check), `unit` (affected packages except `opencode`) and eight `opencode (N/8)` shards (`bun test --shard`) run in parallel. Packages upstream adds later fall into `rest` automatically; `HEAVY` only needs revisiting if one group becomes much slower than the other. `packages/opencode` holds almost all the test time, so it is the only package that is sharded. `bun test --shard` splits by file count, not by duration, so shards are uneven; more shards keep the slowest one short.
+- `typecheck` and `test` aggregate those jobs so branch protection can keep requiring the `typecheck` and `test` checks. Both fail if `changes` fails.
 - It runs on PRs and on demand. Pushes to `custom` run only the `cache` job, and only when the lockfile, patches or a workspace `package.json` change, to save the `node_modules` cache where every PR can read it (caches saved by a PR are private to that PR).
 - Every job installs dependencies through `fork-setup-bun` (4.6), which restores `node_modules` instead of Bun's download cache.
 
@@ -515,8 +523,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.affected.outputs.code }}
-      typecheck: ${{ steps.affected.outputs.typecheck }}
-      filters: ${{ steps.affected.outputs.filters }}
+      typecheck_matrix: ${{ steps.affected.outputs.typecheck_matrix }}
       unit: ${{ steps.affected.outputs.unit }}
       unit_filters: ${{ steps.affected.outputs.unit_filters }}
       opencode: ${{ steps.affected.outputs.opencode }}
@@ -534,14 +541,29 @@ jobs:
         id: affected
         env:
           TURBO_TELEMETRY_DISABLED: "1"
+          # Typecheck runs as two groups on separate runners. These packages
+          # take about half of the typecheck time; every other package,
+          # including ones upstream adds later, falls into the "rest" group.
+          HEAVY: |-
+            opencode
+            @opencode-ai/sdk-next
+            @opencode-ai/cli
+            @opencode-ai/server
         run: |
-          everything() {
-            echo "$1: running everything"
-            printf 'code=true\ntypecheck=true\nfilters=\nunit=true\nunit_filters=--filter=!./packages/opencode\nopencode=true\n' >> "$GITHUB_OUTPUT"
-            exit 0
-          }
           filters() { if [ -n "$1" ]; then sed 's/^/--filter=/' <<< "$1" | paste -sd' '; fi; }
           flag() { if [ -n "$1" ]; then echo true; else echo false; fi; }
+          # write <heavy filters> <rest filters> <unit filters> <opencode flag>
+          write() {
+            jq -nc --arg heavy "$1" --arg rest "$2" \
+              '[if $heavy != "" then {group: "heavy", filters: $heavy} else empty end, {group: "rest", filters: $rest}]' |
+              sed 's/^/typecheck_matrix=/' >> "$GITHUB_OUTPUT"
+            printf 'code=true\nunit=%s\nunit_filters=%s\nopencode=%s\n' "$(flag "$3")" "$3" "$4" >> "$GITHUB_OUTPUT"
+          }
+          everything() {
+            echo "$1: running everything"
+            write "$(filters "$HEAVY")" "$(sed 's/^/--filter=!/' <<< "$HEAVY" | paste -sd' ')" "--filter=!./packages/opencode" true
+            exit 0
+          }
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then everything "not a pull request"; fi
           code=$(git diff --name-only HEAD^1 HEAD | grep -vE '\.md$' || true)
           if [ -z "$code" ]; then
@@ -555,21 +577,22 @@ jobs:
             jq -r '.packages.items[].name') || everything "turbo ls failed"
           echo "affected packages:"
           echo "$names"
-          unit=$(grep -vx opencode <<< "$names" || true)
-          {
-            echo "code=true"
-            echo "typecheck=$(flag "$names")"
-            echo "filters=$(filters "$names")"
-            echo "unit=$(flag "$unit")"
-            echo "unit_filters=$(filters "$unit")"
-            echo "opencode=$(flag "$(grep -x opencode <<< "$names" || true)")"
-          } >> "$GITHUB_OUTPUT"
+          write \
+            "$(filters "$(grep -xF "$HEAVY" <<< "$names" || true)")" \
+            "$(filters "$(grep -vxF "$HEAVY" <<< "$names" || true)")" \
+            "$(filters "$(grep -vx opencode <<< "$names" || true)")" \
+            "$(flag "$(grep -x opencode <<< "$names" || true)")"
 
-  typecheck:
+  typecheck-group:
+    name: typecheck (${{ matrix.group }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.typecheck_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -578,11 +601,12 @@ jobs:
       # Filters come from PR-controlled package names, so they go through env
       # and word splitting instead of being interpolated into the script.
       - name: Typecheck
-        if: needs.changes.outputs.typecheck == 'true'
+        if: matrix.filters != ''
         env:
-          FILTERS: ${{ needs.changes.outputs.filters }}
+          FILTERS: ${{ matrix.filters }}
         run: bun turbo typecheck $FILTERS
       - name: Check generated client
+        if: matrix.group == 'rest'
         working-directory: packages/client
         run: bun run check:generated
 
@@ -627,8 +651,18 @@ jobs:
       - name: Unit tests (packages/opencode shard)
         run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
 
-  # Branch protection requires a check named `test`; this job reports the
-  # combined result of the test jobs above under that name.
+  # Branch protection requires checks named `typecheck` and `test`; these jobs
+  # report the combined result of the jobs above under those names.
+  typecheck:
+    needs: [changes, typecheck-group]
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check typecheck results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
   test:
     needs: [changes, unit, opencode]
     if: always() && github.event_name != 'push'
@@ -1043,3 +1077,5 @@ To avoid clashing with an official install, run the fork binary under an alias (
 | Auto-merge doesn't turn on | Auto-merge disabled or no required checks | Section 2.5 |
 | `check:generated` fails | The client was not regenerated after the merge | `cd packages/client && bun run generate` |
 | The `pre-push` hook fails on the Bun version | Local Bun differs from `packageManager` | Install the version in `package.json` → `packageManager` |
+| On Windows, `pre-push` fails with `TS1128` in `custom-elements.d.ts` | Symlinks were checked out as text files | Section 2.3: Developer Mode plus `core.symlinks true` |
+| A green sync PR does not auto-merge | `custom` advanced and the PR is out of date | The next hourly `fork-sync` merges `custom` into it; or run it by hand |
