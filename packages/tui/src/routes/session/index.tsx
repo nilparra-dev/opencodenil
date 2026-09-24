@@ -2641,6 +2641,8 @@ const toolDisplays = new Set([
 ])
 
 export function toolDisplay(tool: string) {
+  // fork: Anthropic OAuth advertises the built-in todo tool under this wire name.
+  if (tool === "TodoWrite" || tool === "OpenCodeTodoWrite") return "todowrite"
   return toolDisplays.has(tool) ? tool : "generic"
 }
 

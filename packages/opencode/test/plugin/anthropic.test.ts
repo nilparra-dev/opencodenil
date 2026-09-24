@@ -18,14 +18,15 @@ function oauth(overrides: Partial<Extract<Credentials, { type: "oauth" }>> = {})
   }
 }
 
-function makeInput() {
-  const setCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = []
+function makeInput(failWrite = false) {
+  const setCalls: Array<{ path: { id: string }; body: Record<string, unknown>; throwOnError?: boolean }> = []
   return {
     input: {
       client: {
         auth: {
-          set: async (request: { path: { id: string }; body: Record<string, unknown> }) => {
+          set: async (request: { path: { id: string }; body: Record<string, unknown>; throwOnError?: boolean }) => {
             setCalls.push(request)
+            if (failWrite && request.throwOnError) throw new Error("Credential write failed")
           },
         },
       },
@@ -146,6 +147,7 @@ describe("plugin.anthropic", () => {
     // Anthropic rotates the refresh token on every use, so the new copy is the
     // only one that can refresh again.
     expect(setCalls.length).toBe(1)
+    expect(setCalls[0].throwOnError).toBe(true)
     expect(setCalls[0].body).toMatchObject({ type: "oauth", access: "rotated", refresh: "rotated-refresh" })
     expect(srv.messageRequests().every((request) => request.headers.get("authorization") === "Bearer rotated")).toBe(
       true,
@@ -154,14 +156,43 @@ describe("plugin.anthropic", () => {
     srv.server.stop(true)
   })
 
-  test("passes requests through untouched once credentials become an api key", async () => {
+  test("shares one rotating refresh token across loader instances", async () => {
+    const srv = makeServer()
+    const { input, setCalls } = makeInput()
+    const credentials = oauth({ expires: Date.now() - 1 })
+    const first = await loaderOptions(credentials, input, srv.url("/v1/oauth/token"))
+    const second = await loaderOptions(credentials, input, srv.url("/v1/oauth/token"))
+
+    await Promise.all([first, second].map((options) =>
+      (options.fetch as (input: RequestInfo | URL) => Promise<Response>)(srv.url("/v1/messages")),
+    ))
+
+    expect(srv.tokenRequests()).toHaveLength(1)
+    expect(setCalls).toHaveLength(1)
+    srv.server.stop(true)
+  })
+
+  test("does not send inference after a rotated token fails to persist", async () => {
+    const srv = makeServer()
+    const { input, setCalls } = makeInput(true)
+    const options = await loaderOptions(oauth({ expires: Date.now() - 1 }), input, srv.url("/v1/oauth/token"))
+    const send = options.fetch as (input: RequestInfo | URL) => Promise<Response>
+
+    await expect(send(srv.url("/v1/messages"))).rejects.toThrow("Credential write failed")
+    expect(setCalls[0].throwOnError).toBe(true)
+    expect(srv.tokenRequests()).toHaveLength(1)
+    expect(srv.messageRequests()).toHaveLength(0)
+    srv.server.stop(true)
+  })
+
+  test("replaces the cached SDK dummy key when credentials become an api key", async () => {
     const srv = makeServer()
     let credentials: Credentials = oauth()
     const hooks = await AnthropicAuthPlugin(makeInput().input)
     const options = await hooks.auth!.loader!(async () => credentials, undefined as any)
 
     credentials = { type: "api", key: "sk-ant-live" }
-    const init: RequestInit = { headers: { "x-api-key": "sk-ant-live" } }
+    const init: RequestInit = { headers: { "x-api-key": "opencode-oauth-dummy-key" } }
     await (options.fetch as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)(
       new Request(srv.url("/v1/messages")),
       init,
@@ -215,7 +246,7 @@ describe("plugin.anthropic", () => {
     srv.server.stop(true)
   })
 
-  test("rejects a callback carrying a mismatched state", async () => {
+  test("ignores an unrelated callback without cancelling the login", async () => {
     const srv = makeServer()
     const hooks = await AnthropicAuthPlugin(makeInput().input, {
       tokenUrl: srv.url("/v1/oauth/token"),
@@ -227,9 +258,10 @@ describe("plugin.anthropic", () => {
     const started = await method.authorize()
     if (started.method !== "auto") throw new Error("expected an auto callback")
     const redirect = new URL(started.url).searchParams.get("redirect_uri")!
-    await fetch(`${redirect}?code=auth-code&state=someone-elses`)
-
-    await expect(started.callback()).rejects.toThrow("Invalid state")
+    expect((await fetch(`${redirect}?code=auth-code&state=someone-elses`)).status).toBe(400)
+    expect((await fetch(`${redirect}?error=denied`)).status).toBe(400)
+    expect((await fetch(`${redirect}?code=auth-code&state=${new URL(started.url).searchParams.get("state")}`)).status).toBe(200)
+    await expect(started.callback()).resolves.toMatchObject({ type: "success", access: "rotated" })
 
     srv.server.stop(true)
   })

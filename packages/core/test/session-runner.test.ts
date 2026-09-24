@@ -53,6 +53,8 @@ import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { Credential } from "@opencode-ai/core/credential"
+import { Integration } from "@opencode-ai/core/integration"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
@@ -652,6 +654,49 @@ describe("SessionRunnerLLM", () => {
         { role: "user", content: [{ type: "text", text: "Second" }] },
       ])
       expect(yield* session.messages({ sessionID })).toHaveLength(2)
+    }),
+  )
+
+  it.effect("builds the Claude Code subscription prompt in a V2 turn", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const catalog = ModelV2.Info.make({
+        id: ModelV2.ID.make("claude-test"), providerID: ProviderV2.ID.anthropic, name: "Claude",
+        api: { type: "aisdk", package: "@ai-sdk/anthropic", id: ModelV2.ID.make("claude-sonnet-4-5"), url: "https://api.anthropic.com/v1" },
+        capabilities: { tools: true, input: ["text"], output: ["text"] },
+        request: { headers: {}, body: {} }, variants: [], time: { released: 0 },
+        cost: [], status: "active", enabled: true, limit: { context: 200_000, output: 10_000 },
+      })
+      const credential = Credential.OAuth.make({ type: "oauth", methodID: Integration.MethodID.make("claude-pro-max"), access: "access", refresh: "refresh", expires: Date.now() + 3_600_000 })
+      currentModel = yield* SessionRunnerModel.fromCatalogModel(catalog, credential)
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Earlier question ".repeat(180) }), resume: false })
+      requests.length = 0
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0].system.map((item) => item.text)).toEqual(["You are Claude Code, Anthropic's official CLI for Claude."])
+      expect(userTexts(requests[0])[0]).toContain("Initial context")
+      expect(userTexts(requests[0])[1]).toBe("Earlier question ".repeat(180))
+      const prepared = yield* LLMClient.prepare(requests[0])
+      expect(prepared.body).toMatchObject({ system: [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." }] })
+
+      currentModel = yield* SessionRunnerModel.fromCatalogModel(
+        ModelV2.Info.make({ ...catalog, limit: { context: 4_000, output: 50 } }), credential,
+      )
+      requests.length = 0
+      responses = [
+        fragmentFixture("text", "text-summary", ["## Objective\n- Preserve the task"]).completeEvents,
+        fragmentFixture("text", "text-final", ["Continued"]).completeEvents,
+      ]
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Recent exact request ".repeat(180) }), resume: false })
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+        ["You are Claude Code, Anthropic's official CLI for Claude."],
+        ["You are Claude Code, Anthropic's official CLI for Claude."],
+      ])
     }),
   )
 

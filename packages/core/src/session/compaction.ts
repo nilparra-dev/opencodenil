@@ -8,6 +8,7 @@ import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { Token } from "../util/token"
+import { SessionRunnerModel } from "./runner/model"
 
 const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
@@ -203,6 +204,8 @@ export const make = (dependencies: Dependencies) => {
         LLM.request({
           model: input.model,
           http: input.request.http,
+          // Subscription auth rejects a summarization turn without its exact system identity.
+          system: SessionRunnerModel.isAnthropicOAuth(input.model) ? input.request.system : undefined,
           messages: [Message.user(summaryPrompt)],
           tools: [],
           generation: { maxTokens: summaryOutput },

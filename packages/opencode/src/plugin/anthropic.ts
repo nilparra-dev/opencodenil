@@ -38,6 +38,8 @@ export const CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI
 // that expires mid-flight. Anthropic rotates the refresh token on every use,
 // so a stale copy is a hard re-login.
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 300_000
+const TOKEN_TIMEOUT_MS = 30_000
+const refreshes = new Map<string, Promise<{ access: string; refresh: string; expires: number }>>()
 
 interface AnthropicAuthPluginOptions {
   tokenUrl?: string
@@ -77,6 +79,7 @@ async function postToken(
 ): Promise<TokenResponse> {
   const response = await fetch(options.tokenUrl ?? TOKEN_URL, {
     method: "POST",
+    signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -117,7 +120,10 @@ function startCallbackServer(state: string, port: number) {
     // The timeout below can reject before callback() awaits this promise, so
     // mark it handled now to keep it from surfacing as an unhandled rejection.
     waitForCode.catch(() => {})
-    const timeout = setTimeout(() => rejectCode(new Error(OAUTH_TIMEOUT_MESSAGE)), OAUTH_TIMEOUT_MS)
+    const timeout = setTimeout(() => {
+      rejectCode(new Error(OAUTH_TIMEOUT_MESSAGE))
+      close()
+    }, OAUTH_TIMEOUT_MS)
     const settle = (fn: () => void) => {
       clearTimeout(timeout)
       fn()
@@ -137,6 +143,10 @@ function startCallbackServer(state: string, port: number) {
       }
       const error = url.searchParams.get("error")
       const detail = url.searchParams.get("error_description")
+      if (url.searchParams.get("state") !== state) {
+        html(400, OauthCallbackPage.error("Invalid state", { provider: "Anthropic" }))
+        return
+      }
       if (error) {
         settle(() => rejectCode(new Error(detail || error)))
         html(200, OauthCallbackPage.error(detail || error, { provider: "Anthropic" }))
@@ -149,32 +159,26 @@ function startCallbackServer(state: string, port: number) {
         html(400, OauthCallbackPage.error("Missing authorization code", { provider: "Anthropic" }))
         return
       }
-      if (url.searchParams.get("state") !== state) {
-        settle(() => rejectCode(new Error("Invalid state - potential CSRF attack")))
-        html(400, OauthCallbackPage.error("Invalid state", { provider: "Anthropic" }))
-        return
-      }
-
       settle(() => resolveCode(code))
       html(200, OauthCallbackPage.success({ provider: "Anthropic" }))
     })
+    const close = () => {
+      server.closeAllConnections()
+      if (server.listening) server.close()
+    }
 
     server.once("error", (error) => {
       clearTimeout(timeout)
       reject(error)
     })
-    server.listen(port, () => {
+    server.listen(port, "localhost", () => {
       const address = server.address()
       const bound = typeof address === "object" && address ? address.port : port
       resolve({
         redirectUri: `http://localhost:${bound}${CALLBACK_PATH}`,
         waitForCode,
-        close: () => {
-          // The browser keeps the callback connection alive, which would pin
-          // the event loop open long after the exchange finished.
-          server.closeAllConnections()
-          server.close()
-        },
+        // The browser may leave a keep-alive connection open after the exchange.
+        close,
       })
     })
   })
@@ -191,10 +195,6 @@ export async function AnthropicAuthPlugin(
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
 
-        // Single-flight refresh: collapse concurrent requests onto one HTTP
-        // call so we never replay a refresh token Anthropic already rotated.
-        let refreshPromise: Promise<{ access: string; refresh: string; expires: number }> | undefined
-
         return {
           // Keeps the AI SDK from bailing on "missing apiKey"; the real bearer
           // token is injected by the fetch override below. The SDK's own
@@ -203,16 +203,26 @@ export async function AnthropicAuthPlugin(
           // still wins.
           apiKey: OAUTH_DUMMY_KEY,
           async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
-            let currentAuth = await getAuth()
+            const currentAuth = await getAuth()
+            if (!currentAuth) throw new Error("Anthropic credentials were removed; reconnect before continuing")
             // Auth can flip from oauth to api mid-session when the user
-            // re-runs /connect with a pasted key. Pass those requests through
-            // untouched so the API key reaches Anthropic unmodified.
-            if (currentAuth.type !== "oauth") return fetch(requestInput, init)
+            // re-runs /connect with a pasted key. The SDK still holds the
+            // dummy key from loader(), so replace it in the outgoing request.
+            if (currentAuth.type !== "oauth") {
+              if (currentAuth.type !== "api")
+                throw new Error("Anthropic credentials changed; reconnect before continuing")
+              const headers = new Headers(requestInput instanceof Request ? requestInput.headers : undefined)
+              new Headers(init?.headers).forEach((value, key) => headers.set(key, value))
+              headers.delete("authorization")
+              headers.set("x-api-key", currentAuth.key)
+              return fetch(requestInput, { ...init, headers })
+            }
 
+            let auth = currentAuth
             if (currentAuth.expires - Date.now() <= ACCESS_TOKEN_REFRESH_SKEW_MS) {
-              if (!refreshPromise) {
-                const refreshToken = currentAuth.refresh
-                refreshPromise = postToken(
+              const refreshToken = currentAuth.refresh
+              const inFlight = refreshes.get(refreshToken)
+              const pending = inFlight ?? postToken(
                   { grant_type: "refresh_token", client_id: CLIENT_ID, refresh_token: refreshToken },
                   true,
                   options,
@@ -223,24 +233,21 @@ export async function AnthropicAuthPlugin(
                       refresh: tokens.refresh_token || refreshToken,
                       expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
                     }
-                    // Best-effort: Anthropic already consumed the old refresh
-                    // token, so a failed write leaves disk stale but this turn
-                    // still uses a valid token. The next refresh against the
-                    // stale copy fails and forces a re-login.
-                    await input.client.auth
-                      .set({
-                        path: { id: "anthropic" },
-                        body: { type: "oauth", ...refreshed },
-                      })
-                      .catch(() => {})
+                    const latest = await getAuth()
+                    if (latest?.type !== "oauth" || latest.refresh !== refreshToken)
+                      throw new Error("Anthropic credentials changed during refresh; retry the request")
+                    await input.client.auth.set({
+                      path: { id: "anthropic" },
+                      body: { type: "oauth", ...refreshed },
+                      throwOnError: true,
+                    })
                     return refreshed
                   })
                   .finally(() => {
-                    refreshPromise = undefined
+                    refreshes.delete(refreshToken)
                   })
-              }
-              const refreshed = await refreshPromise
-              currentAuth = { ...currentAuth, ...refreshed }
+              if (!inFlight) refreshes.set(refreshToken, pending)
+              auth = { ...currentAuth, ...(await pending) }
             }
 
             // Copy caller headers into a fresh Headers so we never mutate the
@@ -259,7 +266,7 @@ export async function AnthropicAuthPlugin(
               }
             }
             headers.delete("x-api-key")
-            headers.set("Authorization", `Bearer ${currentAuth.access}`)
+            headers.set("Authorization", `Bearer ${auth.access}`)
             headers.set("User-Agent", CLAUDE_CODE_USER_AGENT)
             headers.set("x-app", "cli")
             const betas = new Set(OAUTH_BETAS)

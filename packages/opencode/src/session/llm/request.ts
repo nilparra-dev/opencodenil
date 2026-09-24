@@ -23,8 +23,6 @@ const USER_AGENT = `opencode/${InstallationVersion}`
 // model, tool count or schema. Renaming the key is enough: the gate only reads
 // that field, history tool calls are ignored, and the tool still carries
 // opencode's own execute and permission key.
-const ANTHROPIC_OAUTH_TOOL_ALIASES: Record<string, string> = { todowrite: "TodoWrite" }
-
 type PrepareInput = {
   readonly user: SessionV1.User
   readonly sessionID: string
@@ -155,6 +153,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   )
 
   const tools = resolveTools(input)
+  const todoAlias = tools.TodoWrite ? "OpenCodeTodoWrite" : "TodoWrite"
+  if (isAnthropicOauth && tools.todowrite && tools[todoAlias])
+    throw new Error(`Anthropic OAuth tool alias ${todoAlias} conflicts with another tool`)
   // Codex parity: OpenAI Responses-family providers hardcode `strict: false`
   // on every function tool so MCP-sourced and dynamic schemas that don't
   // satisfy OpenAI's structured-outputs constraints still register.
@@ -194,7 +195,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       Object.entries(tools)
         .toSorted(([a], [b]) => a.localeCompare(b))
         .map(([name, tool]): [string, Tool] =>
-          isAnthropicOauth ? [ANTHROPIC_OAUTH_TOOL_ALIASES[name] ?? name, tool] : [name, tool],
+          isAnthropicOauth ? [name === "todowrite" ? todoAlias : name, tool] : [name, tool],
         ),
     ),
     params,

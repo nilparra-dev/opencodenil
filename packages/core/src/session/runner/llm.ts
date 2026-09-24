@@ -39,6 +39,8 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { system as claudeCodeSystem } from "../../plugin/provider/anthropic-oauth-constants"
+import { messages as oauthMessages, tools as oauthTools, event as oauthEvent, toolAlias } from "./anthropic-oauth"
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -197,10 +199,13 @@ const layer = Layer.effect(
       const system =
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
       const model = yield* models.resolve(session)
+      const anthropicOAuth = SessionRunnerModel.isAnthropicOAuth(model)
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
+      const todoAlias = toolAlias(toolMaterialization?.definitions ?? [])
+      const instructions = [agent.info?.system, system.baseline].filter((part): part is string => Boolean(part))
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const request = LLM.request({
         model,
@@ -212,11 +217,17 @@ const layer = Layer.effect(
           },
         },
         providerOptions: { openai: { promptCacheKey } },
-        system: [agent.info?.system, system.baseline]
-          .filter((part): part is string => part !== undefined && part.length > 0)
-          .map(SystemPart.make),
-        messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
-        tools: toolMaterialization?.definitions ?? [],
+        // fork: consumer OAuth requires an exact system field. Preserve the
+        // agent and context instructions as the first chronological user input.
+        system: anthropicOAuth ? [SystemPart.make(claudeCodeSystem)] : instructions.map(SystemPart.make),
+        messages: [
+          ...(anthropicOAuth && instructions.length ? [Message.user(instructions.join("\n"))] : []),
+          ...(anthropicOAuth ? oauthMessages(toLLMMessages(context, model), todoAlias) : toLLMMessages(context, model)),
+          ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
+        ],
+        tools: anthropicOAuth
+          ? oauthTools(toolMaterialization?.definitions ?? [], todoAlias)
+          : (toolMaterialization?.definitions ?? []),
         toolChoice: isLastStep ? "none" : undefined,
       })
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
@@ -237,6 +248,7 @@ const layer = Layer.effect(
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
       const providerStream = llm.stream(request).pipe(
+        Stream.map((event) => (anthropicOAuth ? oauthEvent(event, todoAlias) : event)),
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return

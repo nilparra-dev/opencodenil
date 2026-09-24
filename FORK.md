@@ -772,6 +772,10 @@ gh pr merge sync-upstream --auto --merge
 | F-003 | `packages/opencode/src/session/llm/request.ts` (`prepare`) | With `anthropic` + OAuth auth only: the system field is exactly `CLAUDE_CODE_SYSTEM`, opencode's system prompt goes as the first user message, and the `todowrite` tool key is sent as `TodoWrite`. API-key auth and every other provider are untouched | Anthropic rejects consumer OAuth requests otherwise (429 / 400) | No |
 | F-004 | `packages/opencode/src/cli/cmd/providers.ts`, `packages/tui/src/component/dialog-provider.tsx` | The provider pickers describe `anthropic` as "Claude Pro/Max or API key" | Discoverability of F-002 | No |
 | F-005 | `packages/web/src/content/docs/providers.mdx` (Anthropic section) | Docs list the Claude Pro/Max method and warn that it is unsupported by Anthropic's terms | Docs for F-002 | No |
+| F-006 | `packages/opencode/src/session/retry.ts` | Treat explicit Anthropic subscription-window exhaustion as terminal instead of sleeping for a multi-hour Retry-After | Keep OAuth sessions responsive at quota limits | No |
+| F-007 | `packages/tui/src/routes/session/index.tsx` (`toolDisplay`) | Render the Anthropic OAuth wire aliases for `todowrite` using the normal todo display | Keep tool results readable | No |
+| F-008 | `packages/core/src/plugin/provider/anthropic.ts` (one registration), `packages/core/src/session/runner/model.ts`, `packages/core/src/session/runner/llm.ts`, `packages/core/src/session/compaction.ts` | Register Claude Pro/Max login and refresh in V2; send its subscription requests and compaction turns with bearer auth and Claude Code identity while leaving API keys unchanged | Enable Anthropic OAuth on the V2 Session runner | No |
+| F-009 | `packages/core/src/integration.ts` (`connection.resolve`) | Serialize OAuth token refresh per credential across Location instances and re-read credentials inside the lock | Rotating refresh tokens cannot be replayed by concurrent V2 sessions in one process | Yes |
 
 To check that the ledger is complete, list the upstream files the fork modifies (fork-only files excluded):
 
