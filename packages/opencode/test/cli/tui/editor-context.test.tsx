@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, expect, spyOn, test } from "bun:test"
+import { afterEach, expect, mock, spyOn, test } from "bun:test"
 import { createRoot } from "solid-js"
 import { EditorContextProvider, useEditorContext, type EditorIntegration } from "@opencode-ai/tui/context/editor"
 import { tmpdir } from "../../fixture/fixture"
@@ -15,6 +15,8 @@ const originalOpencodePort = process.env.OPENCODE_EDITOR_SSE_PORT
 afterEach(() => {
   process.env.CLAUDE_CODE_SSE_PORT = originalClaudePort
   process.env.OPENCODE_EDITOR_SSE_PORT = originalOpencodePort
+  // fork: restore the process.cwd/os.homedir spies so they do not leak into later files in the same bun test process
+  mock.restore()
 })
 
 function nextTick() {
