@@ -776,7 +776,6 @@ gh pr merge sync-upstream --auto --merge
 | F-007 | `packages/tui/src/routes/session/index.tsx` (`toolDisplay`) | Render the Anthropic OAuth wire aliases for `todowrite` using the normal todo display | Keep tool results readable | No |
 | F-008 | `packages/core/src/plugin/provider/anthropic.ts` (one registration), `packages/core/src/session/runner/model.ts`, `packages/core/src/session/runner/llm.ts`, `packages/core/src/session/compaction.ts` | Register Claude Pro/Max login and refresh in V2; send its subscription requests and compaction turns with bearer auth and Claude Code identity while leaving API keys unchanged | Enable Anthropic OAuth on the V2 Session runner | No |
 | F-009 | `packages/core/src/integration.ts` (`connection.resolve`) | Serialize OAuth token refresh per credential across Location instances and re-read credentials inside the lock | Rotating refresh tokens cannot be replayed by concurrent V2 sessions in one process | Yes |
-| F-010 | `package.json` (`dev` script) | Launch the source TUI from the repository root so `bun run dev` opens this project, not `packages/opencode`; provider login remains available through `/connect` | Run and configure the fork in this checkout | No |
 
 To check that the ledger is complete, list the upstream files the fork modifies (fork-only files excluded):
 
