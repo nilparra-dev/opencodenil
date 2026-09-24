@@ -62,7 +62,7 @@ origin/custom  ────────●──○──○──────�
 
 Until September 2026 the fork followed `upstream/dev`, the V1 line (`opencode-ai`, `packages/opencode`). V1 went into maintenance while upstream's work moved to `v2`, so the fork moved too: `custom` was rebuilt from the `v2.0.16` tag with the fork changes ported, and the old `custom` history was joined with an `ours` merge so no force-push was needed. The V1-only patches were retired (see the end of section 7).
 
-After moving from a V1 build to a V2 build, **log in to Anthropic again with "Claude Pro/Max"**. V2 imports V1 OAuth logins under a generic `oauth` method that has no refresh and is not recognized as a subscription.
+The V2 fork build (`opencodenil`, section 10) starts with its own database, so **log in to Anthropic with "Claude Pro/Max"** the first time. A V1 login imported by the official V2 `opencode` uses a generic `oauth` method that has no refresh and is not recognized as a subscription, so it would not work either.
 
 ---
 
@@ -250,7 +250,9 @@ All of these files are **fork-only**: upstream does not have them, so they never
 | `.github/workflows/fork-sync.yml`                           | Automatic sync with upstream releases (section 3)                              |
 | `.github/workflows/fork-ci.yml`                             | Fork CI on standard GitHub runners (4.2)                                       |
 | `.github/workflows/fork-resolve.yml`                        | (Optional) Conflict resolution by an agent (4.3)                               |
+| `.github/workflows/fork-release.yml`                        | Builds and publishes `opencodenil` releases (4.5)                              |
 | `.github/actions/fork-setup-bun/action.yml`                 | Bun setup for fork workflows, caching `node_modules` by lockfile (4.4)         |
+| `script/fork-install.ps1`, `script/fork-install.sh`         | Install or update `opencodenil` from this repository's releases (section 10)   |
 | `packages/core/src/plugin/provider/fork-anthropic-oauth.ts` | Claude Pro/Max login (ledger F-002)                                            |
 | `packages/core/test/plugin/fork-anthropic-oauth.test.ts`    | Tests for it                                                                   |
 
@@ -291,6 +293,18 @@ To enable it:
 ### 4.4 `fork-setup-bun/action.yml`
 
 Fork workflows use this action instead of upstream's `.github/actions/setup-bun`, which we do not edit. It installs the same Bun version, but caches the installed `node_modules` trees (`packages/*`, `packages/*/*` and `services/*` workspaces) keyed by `bun.lock`, `patches/**` and the workspace `package.json` files. An exact hit skips `bun install`; a partial hit runs it to complete the tree. With `install: "false"` it only puts Bun on `PATH`. It saves the cache only outside pull requests: `fork-sync` saves it for each merged lockfile, and `fork-ci` does so on pushes to `custom` that change those inputs.
+
+### 4.5 `fork-release.yml`
+
+Builds `opencodenil` with upstream's own `packages/cli/script/build.ts` and publishes it to this repository's GitHub Releases (not npm).
+
+- **Version:** `<upstream release>-nil.<N>`, for example `2.0.16-nil.1`. The upstream part is the newest `v2.X.Y` tag contained in `custom`; `N` counts our releases on top of it and restarts at 1 with each upstream release. Nobody writes versions by hand. The `-nil.N` suffix is a SemVer prerelease on purpose: `+nil.N` build metadata is ignored by npm and most tools, so two fork builds of the same upstream release would look identical.
+- **When:** a push to `custom` publishes only when the upstream release it contains has no fork release yet, which is what a merged `fork-sync` PR looks like. Other pushes do nothing. Running the workflow by hand publishes the next `N` for fork-only changes.
+- **Platforms:** Windows x64 and Linux x64, both cross-compiled from one Linux runner as upstream does. Each release has `opencodenil-windows-x64.zip`, `opencodenil-linux-x64.tar.gz` and `SHA256SUMS`. The binaries are not code-signed.
+- **Channel `nil`:** the build sets `OPENCODE_CHANNEL=nil`. In V2 the channel selects the background server registration, its port and the database file, so `opencodenil` gets `service-nil.json`, its own port and `opencode-nil.db`. With the official `latest` channel, the fork and the official `opencode` would share one background server and restart it on every version mismatch. Configuration in `~/.config/opencode` is still shared.
+- **Updates:** the V2 updater only upgrades installs it recognizes (the official installer path, npm-style package managers, Homebrew). `opencodenil` is none of those, so the official updater never replaces it, and `opencodenil upgrade` reports that it cannot update. To update, run the install script again.
+- **Notes:** the upstream release with a link to its notes, the ledger table from section 7, and the fork-only commits since the previous fork release.
+- The build job runs repository code with a read-only token; a separate `publish` job creates the release.
 
 ---
 
@@ -477,13 +491,25 @@ git cherry-pick <commits>                          # or redo the change cleanly
 
 ## 10. Using the fork build
 
+Install or update the latest release (4.5) into `~/.opencodenil/bin`, which the script adds to `PATH`:
+
+```powershell
+irm https://raw.githubusercontent.com/nilparra-dev/opencodenil/custom/script/fork-install.ps1 | iex   # Windows x64
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nilparra-dev/opencodenil/custom/script/fork-install.sh | bash   # Linux x64
+```
+
+Set `OPENCODENIL_VERSION=2.0.16-nil.1` to install a specific release. The binary is named `opencodenil`, so it lives next to the official `opencode`; its help text still says `opencode` because the name comes from upstream's build script.
+
+From source:
+
 ```bash
 bun install
 bun run dev                                            # development, from the root (runs packages/cli)
-cd packages/cli && bun run build --single              # binary for the current platform only → packages/cli/dist/<platform>/bin/
+cd packages/cli && OPENCODE_CHANNEL=nil bun run build --single   # current platform only → packages/cli/dist/<platform>/bin/
 ```
-
-To avoid clashing with an official install, run the fork binary under an alias (for example `opencodenil`) instead of replacing the official one. The fork build shares configuration, logins and the database with the official `opencode`.
 
 ---
 
@@ -502,3 +528,5 @@ To avoid clashing with an official install, run the fork binary under an alias (
 | The `pre-push` hook fails on the Bun version                      | Local Bun differs from `packageManager`                      | Install the version in `package.json` → `packageManager`                     |
 | A green sync PR does not auto-merge                               | `custom` advanced and the PR is out of date                  | The next hourly `fork-sync` merges `custom` into it; or run it by hand       |
 | Claude Pro/Max requests fail with 401/429 after moving from V1    | The V1 login was imported without refresh                    | Log in again and pick "Claude Pro/Max" (section 1)                           |
+| `fork-release` did not publish after a push                       | That upstream release already has a fork release             | Expected; run `fork-release` by hand to publish the next `-nil.N`            |
+| `opencodenil` does not see the sessions or logins of `opencode`   | Channel `nil` uses its own database (4.5)                    | Expected; log in once in `opencodenil`                                       |

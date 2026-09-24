@@ -1,0 +1,182 @@
+name: fork-release
+
+# Publishes opencodenil builds to this repository's GitHub Releases.
+# - A push to custom that brings in an upstream release with no fork release yet
+#   publishes <upstream>-nil.1 (fork-sync's merge is such a push).
+# - A manual run publishes the next <upstream>-nil.N from the current custom.
+# Other pushes to custom do nothing.
+
+on:
+  push:
+    branches: [custom]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: anomalyco/opencode
+  UPSTREAM_TAG_PATTERN: '^v2\.[0-9]+\.[0-9]+$'
+  # Its own channel gives the fork build its own background server and database,
+  # so it never replaces or migrates the official opencode's.
+  FORK_CHANNEL: nil
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      base: ${{ steps.plan.outputs.base }}
+      version: ${{ steps.plan.outputs.version }}
+      previous: ${{ steps.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Plan release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v2.*:refs/tags/v2.*'
+          base=$(git tag -l 'v2.*' --merged HEAD | grep -E "$UPSTREAM_TAG_PATTERN" | sort -V | tail -1)
+          if [ -z "$base" ]; then echo "custom contains no upstream release tag" >&2; exit 1; fi
+          releases=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[].tagName')
+          last=$(grep -E "^${base//./\\.}-nil\.[0-9]+$" <<< "$releases" | sed 's/.*-nil\.//' | sort -n | tail -1 || true)
+          previous=$(grep -E -- '-nil\.[0-9]+$' <<< "$releases" | head -1 || true)
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$last" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$base already has fork release $base-nil.$last; nothing to publish"
+            exit 0
+          fi
+          version="${base#v}-nil.$(( ${last:-0} + 1 ))"
+          {
+            echo "publish=true"
+            echo "base=$base"
+            echo "version=$version"
+            echo "previous=$previous"
+          } >> "$GITHUB_OUTPUT"
+          echo "publishing $version (upstream $base, previous fork release: ${previous:-none})"
+
+  # Runs repository code, so it has no write access. Upstream builds every
+  # platform from one Linux runner the same way.
+  build:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/fork-setup-bun
+
+      - name: Build
+        env:
+          OPENCODE_VERSION: ${{ needs.plan.outputs.version }}
+          OPENCODE_CHANNEL: ${{ env.FORK_CHANNEL }}
+        run: |
+          # build.ts clears its --outdir, so each target gets its own.
+          bun ./packages/cli/script/build.ts --target=opencode-linux-x64 --outdir=dist-fork/linux-x64
+          bun ./packages/cli/script/build.ts --target=opencode-windows-x64 --outdir=dist-fork/windows-x64 --skip-install
+
+      - name: Package
+        run: |
+          mkdir -p release stage/linux stage/windows
+          cp packages/cli/dist-fork/linux-x64/cli-linux-x64/bin/opencode stage/linux/opencodenil
+          cp packages/cli/dist-fork/windows-x64/cli-windows-x64/bin/opencode.exe stage/windows/opencodenil.exe
+          tar -czf release/opencodenil-linux-x64.tar.gz -C stage/linux opencodenil
+          (cd stage/windows && zip -q ../../release/opencodenil-windows-x64.zip opencodenil.exe)
+          (cd release && sha256sum * > SHA256SUMS)
+          ls -l release
+
+      - name: Smoke test
+        run: |
+          out=$(./stage/linux/opencodenil --version)
+          echo "$out"
+          grep -qF "${{ needs.plan.outputs.version }}" <<< "$out"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-release
+          path: release
+
+      - name: Write release notes
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PREVIOUS: ${{ needs.plan.outputs.previous }}
+        run: |
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" "+refs/tags/$BASE:refs/tags/$BASE"
+          raw="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/custom/script"
+          {
+            echo "Based on OpenCode [$BASE](https://github.com/$UPSTREAM_REPO/releases/tag/$BASE), plus the fork changes below."
+            echo
+            echo "## Fork changes"
+            echo
+            # The ledger table from FORK.md section 7 (header and active entries).
+            awk '/^## 7\./{on=1} /^### Retired/{on=0} on && /^\|/' FORK.md
+            if [ -n "$PREVIOUS" ] && git fetch --no-tags origin "+refs/tags/$PREVIOUS:refs/tags/$PREVIOUS"; then
+              echo
+              echo "## Fork commits since $PREVIOUS"
+              echo
+              # Upstream commits reachable from the release tag are left out.
+              git log --no-merges --format='- %s (%h)' "$PREVIOUS..HEAD" "^$BASE" | grep . || echo "- None; this release only updates upstream."
+            fi
+            echo
+            echo "## Install or update"
+            echo
+            echo "Windows (PowerShell):"
+            echo
+            echo '```powershell'
+            echo "irm $raw/fork-install.ps1 | iex"
+            echo '```'
+            echo
+            echo "Linux:"
+            echo
+            echo '```bash'
+            echo "curl -fsSL $raw/fork-install.sh | bash"
+            echo '```'
+            echo
+            echo "The binary is \`opencodenil\`. It runs its own background server and database (channel \`$FORK_CHANNEL\`), so it can be used next to the official \`opencode\`; configuration in \`~/.config/opencode\` is shared. Binaries are not code-signed, so Windows SmartScreen may warn on first run."
+          } > notes.md
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          gh release create "v$VERSION" release/* \
+            --target "$GITHUB_SHA" \
+            --title "opencodenil $VERSION" \
+            --notes-file notes.md
