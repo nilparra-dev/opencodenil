@@ -254,6 +254,41 @@ describe("Integration", () => {
     }),
   )
 
+  it.effect("serializes refreshes of the same rotating credential", () =>
+    Effect.gen(function* () {
+      const integrations = yield* Integration.Service
+      const credentials = yield* Credential.Service
+      const integrationID = Integration.ID.make("anthropic")
+      const methodID = Integration.MethodID.make("claude-pro-max")
+      const seen: string[] = []
+      yield* integrations.transform((editor) =>
+        editor.method.update({
+          integrationID,
+          method: { id: methodID, type: "oauth", label: "Claude Pro/Max" },
+          authorize: () => Effect.never,
+          refresh: (old) => Effect.gen(function* () {
+            seen.push(old.refresh)
+            yield* Effect.yieldNow
+            return Credential.OAuth.make({ ...old, access: "new-access", refresh: "new-refresh", expires: 3_600_000 })
+          }),
+        }),
+      )
+      const saved = yield* credentials.create({
+        integrationID,
+        value: Credential.OAuth.make({ type: "oauth", methodID, access: "old-access", refresh: "old-refresh", expires: 1 }),
+      })
+      const connection = { type: "credential" as const, id: saved.id, label: saved.label }
+      const result = yield* Effect.all([
+        integrations.connection.resolve(connection),
+        integrations.connection.resolve(connection),
+      ], { concurrency: "unbounded" })
+
+      expect(seen).toEqual(["old-refresh"])
+      expect(result.map((value) => value?.type === "oauth" && value.access)).toEqual(["new-access", "new-access"])
+      expect((yield* credentials.get(saved.id))?.value).toMatchObject({ refresh: "new-refresh" })
+    }),
+  )
+
   it.effect("expires abandoned OAuth attempts", () =>
     Effect.gen(function* () {
       const integrations = yield* Integration.Service

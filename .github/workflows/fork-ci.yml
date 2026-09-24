@@ -3,8 +3,6 @@ name: fork-ci
 on:
   pull_request:
     branches: [custom]
-  push:
-    branches: [custom]
   workflow_dispatch:
 
 concurrency:
@@ -15,7 +13,28 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Detect code changes
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Markdown-only PRs skip the heavy jobs. Any lookup failure counts as a code change.
+          if [ -z "$PR" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename' || echo "unknown")
+          if echo "$files" | grep -qvE '\.md$'; then echo "code=true"; else echo "code=false"; fi >> "$GITHUB_OUTPUT"
+
   typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -24,9 +43,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun typecheck
 
-  test:
+  unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -36,10 +57,41 @@ jobs:
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "fork-ci"
-      - name: Unit tests
-        run: |
-          GITHUB_ACTIONS=false bun turbo test --filter='!./packages/opencode'
-          GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
+      - name: Unit tests (every package except opencode)
+        run: GITHUB_ACTIONS=false bun turbo test --filter='!./packages/opencode'
       - name: Check generated client
         working-directory: packages/client
         run: bun run check:generated
+
+  opencode:
+    name: opencode (${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "fork-ci"
+      - name: Unit tests (packages/opencode shard)
+        run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --shard=${{ matrix.shard }}/4 --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
+
+  # Branch protection requires a check named `test`; this job reports the
+  # combined result of the test jobs above under that name.
+  test:
+    needs: [changes, unit, opencode]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

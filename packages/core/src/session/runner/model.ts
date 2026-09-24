@@ -14,6 +14,10 @@ import { Integration } from "../../integration"
 import { ModelV2 } from "../../model"
 import { ProviderV2 } from "../../provider"
 import { SessionSchema } from "../schema"
+import { betas, methodID, userAgent } from "../../plugin/provider/anthropic-oauth-constants"
+
+const oauthModels = new WeakSet<Model>()
+export const isAnthropicOAuth = (model: Model) => oauthModels.has(model)
 
 export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelectedError>()(
   "SessionRunnerModel.ModelNotSelectedError",
@@ -147,11 +151,35 @@ export const fromCatalogModel = (
     )
   }
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/anthropic") {
-    return Effect.succeed(
-      withDefaults(resolved, AnthropicMessages.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.header("x-api-key", key) })
-        .model({ id: resolved.api.id }),
-    )
+    // fork: subscription tokens use a bearer and the Claude Code request identity.
+    const oauth =
+      resolved.providerID === ProviderV2.ID.anthropic && credential?.type === "oauth" && credential.methodID === methodID
+    const configured = oauth
+      ? produce(resolved, (draft) => {
+          draft.request.headers = {
+            ...Object.fromEntries(
+              Object.entries(resolved.request.headers).filter(
+                ([name]) =>
+                  !["x-api-key", "authorization", "user-agent", "x-app", "anthropic-beta"].includes(name.toLowerCase()),
+              ),
+            ),
+            "anthropic-beta": [
+              ...Object.entries(resolved.request.headers)
+                .filter(([name]) => name.toLowerCase() === "anthropic-beta")
+                .map(([, value]) => value),
+              betas,
+            ].join(","),
+            "User-Agent": userAgent,
+            "x-app": "cli",
+          }
+        })
+      : resolved
+    const route = withDefaults(configured, AnthropicMessages.route).with({
+      auth: key === undefined ? Auth.none : oauth ? Auth.bearer(key) : Auth.header("x-api-key", key),
+    })
+    const model = route.model({ id: resolved.api.id })
+    if (oauth) oauthModels.add(model)
+    return Effect.succeed(model)
   }
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai-compatible" && resolved.api.url) {
     return Effect.succeed(

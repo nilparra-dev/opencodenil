@@ -313,6 +313,39 @@ describe("SessionRunnerModel", () => {
     }),
   )
 
+  it.effect("uses Claude Code bearer headers only for Anthropic subscription credentials", () =>
+    Effect.gen(function* () {
+      const catalog = ModelV2.Info.make({
+        ...model({ type: "aisdk", package: "@ai-sdk/anthropic", url: "https://api.anthropic.com/v1" }),
+        providerID: ProviderV2.ID.anthropic,
+        request: { headers: { "anthropic-beta": "fine-grained-tool-streaming-2025-05-14", "X-Api-Key": "stale-api-key" }, body: {} },
+      })
+      const oauth = yield* SessionRunnerModel.fromCatalogModel(catalog, Credential.OAuth.make({
+        type: "oauth", methodID: Integration.MethodID.make("claude-pro-max"),
+        access: "subscription-access", refresh: "refresh", expires: Date.now() + 3_600_000,
+      }))
+      const key = yield* SessionRunnerModel.fromCatalogModel(catalog, Credential.Key.make({ type: "key", key: "api-key" }))
+      const authInput = (resolved: typeof oauth) => ({
+        request: LLM.request({ model: resolved, prompt: "Hello" }), method: "POST" as const,
+        url: "https://api.anthropic.com/v1/messages", body: "{}", headers: Headers.empty,
+      })
+      const oauthHeaders = yield* oauth.route.auth.apply(authInput(oauth))
+      const keyHeaders = yield* key.route.auth.apply(authInput(key))
+
+      expect(SessionRunnerModel.isAnthropicOAuth(oauth)).toBe(true)
+      expect(SessionRunnerModel.isAnthropicOAuth(key)).toBe(false)
+      expect(oauthHeaders.authorization).toBe("Bearer subscription-access")
+      expect(oauthHeaders["x-api-key"]).toBeUndefined()
+      expect(oauth.route.defaults.headers).toMatchObject({ "x-app": "cli", "User-Agent": "claude-cli/2.1.281 (external, cli)" })
+      expect(oauth.route.defaults.headers?.["anthropic-beta"]).toContain("oauth-2025-04-20")
+      expect(oauth.route.defaults.headers?.["X-Api-Key"]).toBeUndefined()
+      expect(oauth.route.defaults.http?.headers?.["X-Api-Key"]).toBeUndefined()
+      expect(oauth.route.defaults.headers?.["anthropic-beta"]).toContain("fine-grained-tool-streaming-2025-05-14")
+      expect(keyHeaders["x-api-key"]).toBe("api-key")
+      expect(keyHeaders.authorization).toBeUndefined()
+    }),
+  )
+
   it.effect("rejects catalog APIs without a native route", () =>
     Effect.gen(function* () {
       const failure = yield* SessionRunnerModel.fromCatalogModel(

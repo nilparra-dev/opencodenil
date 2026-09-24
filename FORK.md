@@ -413,15 +413,20 @@ jobs:
 
 ### 4.3 `.github/workflows/fork-ci.yml`
 
-This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not a replacement for all upstream checks. It runs typecheck, Linux unit tests and the generated-client check. Three subprocess timing tests in `packages/opencode/test/cli/run/run-process.test.ts` are excluded by exact test-name filter because they exceed their 15- or 30-second deadlines under full-suite load; they are listed in section 8. All other unit tests still run. The workflow does not run Windows unit tests, E2E tests or the HttpApi exerciser gates. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
+This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not a replacement for all upstream checks. It runs typecheck, Linux unit tests and the generated-client check, split across parallel jobs so a run takes about 4 minutes instead of 10:
+
+- `changes` skips every heavy job when a PR only touches `*.md` files. Skipped jobs count as passing for branch protection.
+- `typecheck`, `unit` (every package except `opencode`, plus the generated-client check) and four `opencode (N/4)` shards (`bun test --shard`) run in parallel. `packages/opencode` holds almost all the test time, so it is the only package that is sharded.
+- `test` aggregates the test jobs so branch protection can keep requiring the `typecheck` and `test` checks.
+- It runs only on PRs and on demand, not on pushes to `custom`: every push to `custom` is a PR merge that already passed this workflow.
+
+Three subprocess timing tests in `packages/opencode/test/cli/run/run-process.test.ts` are excluded by exact test-name filter because they exceeded their 15- or 30-second deadlines under full-suite load; they are listed in section 8. All other unit tests still run. The workflow does not run Windows unit tests, E2E tests or the HttpApi exerciser gates. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
 
 ```yaml
 name: fork-ci
 
 on:
   pull_request:
-    branches: [custom]
-  push:
     branches: [custom]
   workflow_dispatch:
 
@@ -433,30 +438,88 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Detect code changes
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Markdown-only PRs skip the heavy jobs. Any lookup failure counts as a code change.
+          if [ -z "$PR" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename' || echo "unknown")
+          if echo "$files" | grep -qvE '\.md$'; then echo "code=true"; else echo "code=false"; fi >> "$GITHUB_OUTPUT"
+
   typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun typecheck
 
-  test:
+  unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - name: Configure git identity
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "fork-ci"
-      - name: Unit tests
-        run: |
-          GITHUB_ACTIONS=false bun turbo test --filter='!./packages/opencode'
-          GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
+      - name: Unit tests (every package except opencode)
+        run: GITHUB_ACTIONS=false bun turbo test --filter='!./packages/opencode'
       - name: Check generated client
         working-directory: packages/client
         run: bun run check:generated
+
+  opencode:
+    name: opencode (${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "fork-ci"
+      - name: Unit tests (packages/opencode shard)
+        run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/opencode -- --shard=${{ matrix.shard }}/4 --test-name-pattern='^(?!.*(?:exits nonzero promptly when the model is unknown|--format json records an unknown stream finish and continuation|unknown stream finish preserves partial output and continues)).*$'
+
+  # Branch protection requires a check named `test`; this job reports the
+  # combined result of the test jobs above under that name.
+  test:
+    needs: [changes, unit, opencode]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
 ```
 
 If upstream tests fail for reasons unrelated to our changes (flaky or environment-dependent tests), **do not disable them wholesale**. Record the specific test in section 8 and exclude it explicitly.
@@ -705,6 +768,14 @@ gh pr merge sync-upstream --auto --merge
 | ID | Upstream file(s) | Intent (what must stay true) | Reason | Propose upstream? |
 | --- | --- | --- | --- | --- |
 | F-001 | `AGENTS.md` (line 1) | Agents know this is a fork and read `FORK.md` first | Fork infrastructure | No |
+| F-002 | `packages/opencode/src/plugin/index.ts` (import + one `internalPlugins()` entry) | `AnthropicAuthPlugin` from the fork-only `src/plugin/anthropic.ts` is registered as an internal plugin, so `anthropic` offers "Claude Pro/Max" OAuth next to the API key | Claude Pro/Max login | No (upstream removed it on purpose) |
+| F-003 | `packages/opencode/src/session/llm/request.ts` (`prepare`) | With `anthropic` + OAuth auth only: the system field is exactly `CLAUDE_CODE_SYSTEM`, opencode's system prompt goes as the first user message, and the `todowrite` tool key is sent as `TodoWrite`. API-key auth and every other provider are untouched | Anthropic rejects consumer OAuth requests otherwise (429 / 400) | No |
+| F-004 | `packages/opencode/src/cli/cmd/providers.ts`, `packages/tui/src/component/dialog-provider.tsx` | The provider pickers describe `anthropic` as "Claude Pro/Max or API key" | Discoverability of F-002 | No |
+| F-005 | `packages/web/src/content/docs/providers.mdx` (Anthropic section) | Docs list the Claude Pro/Max method and warn that it is unsupported by Anthropic's terms | Docs for F-002 | No |
+| F-006 | `packages/opencode/src/session/retry.ts` | Treat explicit Anthropic subscription-window exhaustion as terminal instead of sleeping for a multi-hour Retry-After | Keep OAuth sessions responsive at quota limits | No |
+| F-007 | `packages/tui/src/routes/session/index.tsx` (`toolDisplay`) | Render the Anthropic OAuth wire aliases for `todowrite` using the normal todo display | Keep tool results readable | No |
+| F-008 | `packages/core/src/plugin/provider/anthropic.ts` (one registration), `packages/core/src/session/runner/model.ts`, `packages/core/src/session/runner/llm.ts`, `packages/core/src/session/compaction.ts` | Register Claude Pro/Max login and refresh in V2; send its subscription requests and compaction turns with bearer auth and Claude Code identity while leaving API keys unchanged | Enable Anthropic OAuth on the V2 Session runner | No |
+| F-009 | `packages/core/src/integration.ts` (`connection.resolve`) | Serialize OAuth token refresh per credential across Location instances and re-read credentials inside the lock | Rotating refresh tokens cannot be replayed by concurrent V2 sessions in one process | Yes |
 
 To check that the ledger is complete, list the upstream files the fork modifies (fork-only files excluded):
 

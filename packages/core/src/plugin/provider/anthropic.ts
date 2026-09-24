@@ -1,9 +1,12 @@
 import { Effect } from "effect"
 import { define } from "../internal"
+import { registration } from "./anthropic-oauth"
 
 export const AnthropicPlugin = define({
   id: "anthropic",
   effect: Effect.fn(function* (ctx) {
+    // fork: register Claude Pro/Max credentials on the V2 integration path.
+    yield* ctx.integration.transform((draft) => draft.method.update(registration))
     yield* ctx.catalog.transform(
       Effect.fn(function* (evt) {
         for (const item of evt.provider.list()) {

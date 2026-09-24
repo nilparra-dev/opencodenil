@@ -11,6 +11,7 @@ import {
   Layer,
   Schedule,
   Schema,
+  Semaphore,
   Scope,
   SynchronizedRef,
   Types,
@@ -20,6 +21,9 @@ import { Credential } from "./credential"
 import { State } from "./state"
 import { EventV2 } from "./event"
 import { IntegrationConnection } from "./integration/connection"
+
+// fork: refresh tokens rotate; serialize refresh for a credential across Locations.
+const credentialRefreshLocks = new Map<Credential.ID, Semaphore.Semaphore>()
 
 export const ID = Integration.ID
 export type ID = Integration.ID
@@ -388,18 +392,30 @@ export const locationLayer = Layer.effect(
             return key ? Credential.Key.make({ type: "key", key }) : undefined
           }
           const credential = yield* credentials.get(connection.id)
-          if (!credential) return undefined
+          if (!credential) {
+            credentialRefreshLocks.delete(connection.id)
+            return undefined
+          }
           if (credential.value.type === "key") return credential.value
           const implementation = state
             .get()
             .integrations.get(credential.integrationID)
             ?.implementations.get(credential.value.methodID)
-          if (!implementation?.refresh) return credential.value
-          const now = yield* Clock.currentTimeMillis
-          if (credential.value.expires > now + Duration.toMillis(Duration.minutes(5))) return credential.value
-          const value = yield* authorize(implementation.refresh(credential.value))
-          yield* credentials.update(credential.id, { value })
-          return value
+          const refresh = implementation?.refresh
+          if (!refresh) return credential.value
+          const lock = credentialRefreshLocks.get(credential.id) ?? Semaphore.makeUnsafe(1)
+          credentialRefreshLocks.set(credential.id, lock)
+          return yield* lock.withPermit(
+            Effect.gen(function* () {
+              const latest = yield* credentials.get(credential.id)
+              if (!latest || latest.value.type !== "oauth") return undefined
+              const now = yield* Clock.currentTimeMillis
+              if (latest.value.expires > now + Duration.toMillis(Duration.minutes(5))) return latest.value
+              const value = yield* authorize(refresh(latest.value))
+              yield* credentials.update(latest.id, { value })
+              return value
+            }),
+          )
         }),
         key: Effect.fn("Integration.connection.key")(function* (input) {
           const method = state
@@ -466,6 +482,7 @@ export const locationLayer = Layer.effect(
         remove: Effect.fn("Integration.connection.remove")(function* (credentialID) {
           const credential = yield* credentials.get(credentialID)
           yield* credentials.remove(credentialID)
+          credentialRefreshLocks.delete(credentialID)
           if (credential) {
             yield* events.publish(Event.ConnectionUpdated, { integrationID: credential.integrationID })
           }

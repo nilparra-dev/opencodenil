@@ -398,6 +398,7 @@ export const ProvidersLoginCommand = effectCmd({
           hint: {
             opencode: "recommended",
             openai: "ChatGPT Plus/Pro or API key",
+            anthropic: "Claude Pro/Max or API key",
           }[x.id],
         })),
       ),

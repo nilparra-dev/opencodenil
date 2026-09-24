@@ -149,6 +149,17 @@ describe("session.retry.delay", () => {
 })
 
 describe("session.retry.retryable", () => {
+  test("does not wait for a subscription usage window but retries transient Anthropic throttling", () => {
+    const quota = new SessionV1.APIError({
+      message: "You're out of extra usage for this 5-hour limit",
+      statusCode: 429,
+      isRetryable: true,
+      responseHeaders: { "retry-after": "18000" },
+    }).toObject()
+    const transient = new SessionV1.APIError({ message: "Rate limit exceeded", statusCode: 429, isRetryable: true }).toObject()
+    expect(SessionRetry.retryable(quota, "anthropic")).toBeUndefined()
+    expect(SessionRetry.retryable(transient, "anthropic")).toMatchObject({ message: "Rate limit exceeded" })
+  })
   test("retries serialized too_many_requests messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Too Many Requests" })
