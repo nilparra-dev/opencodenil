@@ -272,6 +272,7 @@ This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not
 - `typecheck` and `test` aggregate those jobs so branch protection can keep requiring the `typecheck` and `test` checks. Both fail if `changes` fails.
 - It runs on PRs and on demand. Pushes to `custom` run only the `cache` job, and only when the lockfile, patches or a workspace `package.json` change, to save the `node_modules` cache where every PR can read it (caches saved by a PR are private to that PR).
 - Every job installs dependencies through `fork-setup-bun` (4.4), which restores `node_modules` instead of Bun's download cache.
+- The `core` shards install `ripgrep` with apt. Upstream's runners ship `rg`; without it `packages/core` tries to download ripgrep, the test preload blocks the request, and the search tests fail.
 
 The workflow does not run Windows unit tests, E2E tests, the compiled-service smoke test or the generated-documentation check that upstream's `test.yml` runs. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
 

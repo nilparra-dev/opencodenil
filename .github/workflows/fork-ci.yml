@@ -172,6 +172,12 @@ jobs:
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "fork-ci"
+      # Search tests use the system rg; without it core downloads ripgrep,
+      # which the test preload blocks. Upstream's runners ship rg preinstalled.
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Unit tests (packages/core shard)
         run: GITHUB_ACTIONS=false bun turbo test --filter=./packages/core -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
