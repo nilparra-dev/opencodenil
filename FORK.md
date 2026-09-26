@@ -224,7 +224,9 @@ fork-sync.yml ──► disables upstream workflows that are not fork-*
       │                                          green ──► merged into custom automatically ✅
       │                                          red   ──► stays open for an agent or a human ⚠️
       │
-      └─ conflicts ──► "fork-sync-conflict" issue listing the files
+      ├─ conflicts only in files the fork has not changed ──► taken from the release, then as "no conflicts"
+      │
+      └─ other conflicts ──► "fork-sync-conflict" issue listing the files
                             │
                             ├─ (optional) fork-resolve.yml: an agent resolves and opens a "needs-review" PR
                             └─ otherwise a local agent resolves it following section 6
@@ -233,9 +235,11 @@ fork-sync.yml ──► disables upstream workflows that are not fork-*
 - The schedule is hourly. Upstream publishes about one V2 release a day, so most runs find nothing new.
 - The newest release is found with `git ls-remote` on upstream's tags; when the base already contains it, the workflow answers from the GitHub compare API without cloning and finishes in seconds.
 - While a sync PR is open, the run builds on `sync-upstream` instead of rebuilding it from `custom`, so fixes pushed to the sync branch (section 6) are kept. It merges new `custom` commits into it (branch protection requires PRs to be up to date with `custom`, so otherwise auto-merge would stall) and then a newer release, if one appeared. A sync PR that already contains both is left alone.
+- Upstream tags each release on a side commit (`release: v2.X.Y`) that bumps the version in every `package.json` and in `bun.lock`, so release tags are not ancestors of each other and every sync conflicts on those lines. The merge step resolves a conflicted file automatically when the fork has not changed it since the release the base already contains, taking the whole file from the new release (the section 6.2 rule for files not in the ledger). The merge commit lists those files. A conflict in any file the fork changed still opens the issue.
 - An open `fork-sync-conflict` issue is kept current by editing its body, not by adding a comment on every run.
 - The sync PR is updated by pushing `sync-upstream`, which is a bot branch. `custom` is **never** force-pushed.
-- Checkouts that only need history (`fork-sync`, the `publish` jobs) are blobless (`filter: blob:none`); `fork-resolve` keeps a full clone because the agent reads history.
+- The `publish` jobs only load a bundle and push, so their checkouts are blobless (`filter: blob:none`). The jobs that merge (`fork-sync`'s `sync`, `fork-resolve`) use full clones: in a blobless clone the merge fetches missing blobs lazily from `origin`, which does not serve upstream-only objects, and the merge fails with `upload-pack: not our ref`.
+- Conflict reports need Issues enabled on the repository (`gh repo edit nilparra-dev/opencodenil --enable-issues`); `fork-resolve` is also triggered by them.
 
 ---
 
@@ -272,6 +276,7 @@ This is a reduced fork CI gate on standard GitHub runners (`ubuntu-latest`), not
 - `typecheck` and `test` aggregate those jobs so branch protection can keep requiring the `typecheck` and `test` checks. Both fail if `changes` fails.
 - It runs on PRs and on demand. Pushes to `custom` run only the `cache` job, and only when the lockfile, patches or a workspace `package.json` change, to save the `node_modules` cache where every PR can read it (caches saved by a PR are private to that PR).
 - Every job installs dependencies through `fork-setup-bun` (4.4), which restores `node_modules` instead of Bun's download cache.
+- The `core` shards start `pwsh` once before the tests. `ubuntu-latest` ships PowerShell, so the PowerShell shell tests in `packages/core/test/tool-shell.test.ts` run there, and the first `pwsh` start on a fresh runner can exceed their 5 s limit.
 - The `core` shards install `ripgrep` with apt. Upstream's runners ship `rg`; without it `packages/core` tries to download ripgrep, the test preload blocks the request, and the search tests fail.
 
 The workflow does not run Windows unit tests, E2E tests, the compiled-service smoke test or the generated-documentation check that upstream's `test.yml` runs. Add those jobs and require their checks in branch protection if sync PRs must pass them before auto-merge.
