@@ -7,6 +7,7 @@ import { Commands } from "./commands/commands"
 import { Runtime } from "./framework/runtime"
 import { Observability } from "@opencode/util/observability"
 import { ForkUpdater } from "./services/fork-updater" // fork: opencodenil updater (F-003)
+import "./fork-shared-state" // fork: share the official install's database and TUI state (F-004)
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION } from "./version"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
