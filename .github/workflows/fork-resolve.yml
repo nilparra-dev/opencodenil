@@ -44,7 +44,7 @@ jobs:
         continue-on-error: true # bun install can fail while package.json or bun.lock are conflicted
 
       - name: Install opencode
-        run: npm i -g opencode-ai@latest
+        run: npm i -g @opencode/cli@latest
 
       - name: Resolve with agent
         env:

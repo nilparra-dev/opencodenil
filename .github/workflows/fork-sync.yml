@@ -166,8 +166,9 @@ jobs:
         working-directory: packages/client
         run: |
           bun run generate
-          if ! git diff --quiet -- src/generated src/generated-effect; then
-            git add src/generated src/generated-effect
+          # Same paths as check:generated; staging first also catches new files.
+          git add -A -- src/promise/generated src/effect/generated src/effect/api
+          if ! git diff --cached --quiet; then
             git commit -m "chore(fork): regenerate client after upstream merge"
           fi
 
