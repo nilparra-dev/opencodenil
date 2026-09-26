@@ -3,8 +3,11 @@ name: fork-release
 # Publishes opencodenil builds to this repository's GitHub Releases.
 # - A push to custom that brings in an upstream release with no fork release yet
 #   publishes <upstream>-nil.1 (fork-sync's merge is such a push).
+# - A push to custom that changes what goes into the binary (packages/, patches/,
+#   the lockfile or the root package.json) since the last fork release publishes
+#   the next <upstream>-nil.N, so installed builds pick up fork changes too.
 # - A manual run publishes the next <upstream>-nil.N from the current custom.
-# Other pushes to custom do nothing.
+# Other pushes to custom (docs, workflows, install scripts) do nothing.
 
 on:
   push:
@@ -52,9 +55,10 @@ jobs:
           releases=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[].tagName')
           last=$(grep -E "^${base//./\\.}-nil\.[0-9]+$" <<< "$releases" | sed 's/.*-nil\.//' | sort -n | tail -1 || true)
           previous=$(grep -E -- '-nil\.[0-9]+$' <<< "$releases" | head -1 || true)
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$last" ]; then
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$last" ] &&
+            [ -z "$(git diff --name-only "$base-nil.$last" HEAD -- packages patches bun.lock package.json)" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "$base already has fork release $base-nil.$last; nothing to publish"
+            echo "nothing in the binary changed since fork release $base-nil.$last"
             exit 0
           fi
           version="${base#v}-nil.$(( ${last:-0} + 1 ))"
