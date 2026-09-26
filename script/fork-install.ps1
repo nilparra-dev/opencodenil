@@ -20,11 +20,13 @@ Write-Host "Downloading opencodenil $tag"
 Invoke-WebRequest "https://github.com/$repo/releases/download/$tag/opencodenil-windows-x64.zip" -OutFile $zip
 
 New-Item -ItemType Directory -Force $dir | Out-Null
-# Windows cannot overwrite a running executable, but it can rename it.
-if (Test-Path $exe) { Move-Item -Force $exe "$exe.old" }
+# Windows cannot overwrite a running executable, but it can rename it. The background server
+# may still run an older binary, so each replaced one gets its own name and is removed once free.
+Get-ChildItem $dir -Filter "opencodenil.exe.*.old" | Remove-Item -Force -ErrorAction SilentlyContinue
+if (Test-Path $exe) { Move-Item $exe "$exe.$([guid]::NewGuid().ToString('N')).old" }
 Expand-Archive -Force $zip $dir
 Remove-Item $zip
-Remove-Item -Force "$exe.old" -ErrorAction SilentlyContinue
+Get-ChildItem $dir -Filter "opencodenil.exe.*.old" | Remove-Item -Force -ErrorAction SilentlyContinue
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not (($userPath -split ";") -contains $dir)) {
